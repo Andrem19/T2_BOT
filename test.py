@@ -46,7 +46,7 @@ async def main():
     day_opt = 0 if h >= 0 and h < 8 else 1
     opt_day_1, _ = tools.get_next_friday_day(day_opt)
 
-    filtered_chain_0 = tools.filter_otm_options(chain, opt_day_1, 'P', 6)
+    filtered_chain_0 = tools.filter_otm_options(chain, opt_day_1, 'C', 6)
     print(1, len(filtered_chain_0))
     filtered_chain_0 = tools.filter_options_by_distance(filtered_chain_0, 0.03)
     print(2, len(filtered_chain_0))
@@ -113,6 +113,16 @@ async def main():
                     best_params = params
                     best_opt_qty = opt_qty
                     best_stat = stat
+                    print('SYMBOL: ', symbol)
+                    print('INDEX: ', index_put)
+                    print('DIFF: ', best_diff)
+                    print('ASK: ', best_opt_qty['ask'])
+                    print('LOWER_PERC: ', best_params['lower_perc'])
+                    print('UPPER_PERC: ', best_params['upper_perc'])
+                    print(best_opt_qty)
+                    print('PNL: ', best_pnl)
+                    print(best_stat)
+                    
     print('SYMBOL: ', symbol)
     print('INDEX: ', index_put)
     print('DIFF: ', best_diff)

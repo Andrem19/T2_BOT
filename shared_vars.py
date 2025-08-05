@@ -6,10 +6,59 @@ commander: Commander = None
 START_DATE  = "01-01-2024"
 END_DATE    = "01-01-2025"
 
+
+# === Best Option Strategy ===
+# P&L: 0.01
+# ATR: [33.35, 0.009208]
+# RSI: 46.67
+# Symbol: ETH-6AUG25-3550-P-USDT
+# Last px: 3622.23 (0.0203)
+# Total Trades: 622
+# Time to Expiry: 17.897982738055557
+# Ask Indicator: (60.96, 2.08)
+
+# Future Calculation:
+#   qty: 0.0246
+#   pnl_upper: 1.9367
+#   pnl_lower: 0.4842
+#   up_share: 0.8
+#   feasible_min: 0.0068
+#   feasible_max: 0.0268
+#   clipped: False
+#   ask: 0.735
+#   ask_original: 14.7
+#   p_t: 0.04
+
+# Max amount we can take: 14.6
+# Target Bid: 129.75
+# Lower Target: 3408.0 (-0.0592%)
+# Upper Target: 3730.95 (+0.03%)
+# Position we need: first
+# Speed sec: 13.41
+
 stages = {
     'simulation': {
+        'time_to_exp': 10,
+        'atr': [0, 0],
+        'rsi': 0,
+        'last_px': 0,
+        'we_need': 'first',
         'position_1': {
-            
+            'type': 'Put',
+            'qty': 0,
+            'ask_indicators': [98, 1],
+            'name': 'ETH',
+            'symbol': 'ETH-6AUG25-3550-P-USDT',
+            'pnl_upper': 0,
+            'strike_perc': 0.02,
+            'p_t': 0.04,
+            'lower_perc': 0.0592,
+            'upper_perc': 0.03,
+            'best_targ_bid': 0,
+            'ask': 0.735,
+            'ask_original': 14.7,
+            'max_amount': 14.6,
+            'pnl': 0
         },
         'position_2': {
             
@@ -136,28 +185,29 @@ bids_btc = {
     0.045: 4700
 }
 
-data_eth = []
-data_btc= []
-data_sol = []
+
+
+perc_t = [0.025, 0.03, 0.04, 0.05]
+perc_tp = [0.02, 0.025, 0.03, 0.04]
 
 instruments = {
     'ETH': {
         'bids': bids_eth,
-        'data': data_eth,
+        'data': None,
         'kof': 0.05,
         'round': 1,
         'overpay_pad': 0.2,
         },
     'BTC': {
         'bids': bids_btc,
-        'data': data_btc,
+        'data': None,
         'kof': 0.002,
         'round': 2,
         'overpay_pad': 0.50,
         },
     'SOL': {
         'bids': bids_sol,
-        'data': data_sol,
+        'data': None,
         'kof':1,
         'round': 0,
         'overpay_pad': 0.01,
@@ -217,12 +267,14 @@ logger = logging.getLogger(__name__)
 #================LOGER END=============================
 
 
-
+data_list = []
 #==================FLAGS===============================
 timer_msg = 600
 close_1 = False
 close_2 = False
+simulation = True
+opt_types = ['put', 'call']
 
-data_path_sol = "/media/Disk_2/PYTHON/MARKET_DATA/_crypto_data/SOLUSDT/SOLUSDT_5m.csv"
-data_path_eth = "/media/Disk_2/PYTHON/MARKET_DATA/_crypto_data/ETHUSDT/ETHUSDT_5m.csv"
-data_path_btc = "/media/Disk_2/PYTHON/MARKET_DATA/_crypto_data/BTCUSDT/BTCUSDT_5m.csv"
+data_path_sol = "/media/Disk_2/PYTHON/MARKET_DATA/_crypto_data/SOLUSDT/SOLUSDT_1m.csv"
+data_path_eth = "/media/Disk_2/PYTHON/MARKET_DATA/_crypto_data/ETHUSDT/ETHUSDT_1m.csv"
+data_path_btc = "/media/Disk_2/PYTHON/MARKET_DATA/_crypto_data/BTCUSDT/BTCUSDT_1m.csv"

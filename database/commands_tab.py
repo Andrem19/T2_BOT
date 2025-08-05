@@ -12,9 +12,34 @@ class Commands(BaseModel):
     timer: int = 600
     process_id: int = 0
     man_pid: int = 0
+    simulation: bool = True
+    call: bool = False
+    put: bool = True
     btc: bool = False
     eth: bool = True
     sol: bool = False
+
+
+    @classmethod
+    def set_put(cls, value: bool) :
+        inst = cls.get_instance()
+        inst.put = value
+        inst.save()
+        return inst
+
+    @classmethod
+    def set_call(cls, value: bool) :
+        inst = cls.get_instance()
+        inst.call = value
+        inst.save()
+        return inst
+    
+    @classmethod
+    def set_simulation(cls, value: bool) :
+        inst = cls.get_instance()
+        inst.simulation = value
+        inst.save()
+        return inst
     
     @classmethod
     def set_btc(cls, value: bool):

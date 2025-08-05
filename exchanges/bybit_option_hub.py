@@ -251,7 +251,7 @@ class OptionOrderbookSnapshot:
         qty_d = self._to_dec(qty)
         res = self._fill_price(self.bids, qty_d)
         if res is None:
-            return None, None
+            return 0, 0
         cost, worst, worst_lvl_sz = res
         price = cost / qty_d if vwap else worst
         return price, worst_lvl_sz
@@ -1074,84 +1074,127 @@ class ChainUtils:
 class PriceEstimator:
     """
     Оценка реальной цены исполнения объёма по локальному (WS) или
-    REST-стакану. Все цены — Decimal для точности.
+    REST-стакану.
+
+    Возвращаемые значения
+    ---------------------
+    Tuple[
+        price : Optional[Decimal],          # VWAP- или worst-цена,
+        max_qty_at_price : Optional[Decimal]# объём, доступный по этой цене
+    ]
+    Все цены и объёмы – Decimal для точности.
     """
 
+    # -------------------- внутренний помощник --------------------
     @staticmethod
-    def from_local(symbol: str,
-                   qty: Union[int, float, str, Decimal],
-                   *,
-                   buy: bool = True,
-                   vwap: bool = True
-                   ) -> Optional[Decimal]:
+    def _zero_pair() -> Tuple[Optional[Decimal], Optional[Decimal]]:
+        return None, None
+
+    # -------------------- локальный стакан -----------------------
+    @staticmethod
+    def from_local(
+        symbol: str,
+        qty: Union[int, float, str, Decimal],
+        *,
+        buy: bool = True,
+        vwap: bool = True,
+    ) -> Tuple[Optional[Decimal], Optional[Decimal]]:
         """
-        Использует локальный кэш WS (если стакан есть и объёма хватает).
+        Использует локальный WS-стакан.  
+        Если доступного объёма недостаточно – возвращает (None, None).
         """
         ob = MarketDataFeed.instance().get_orderbook(symbol)
         if not ob:
-            return None
-        fn = ob.ask_price_for_qty if buy else ob.bid_price_for_qty
-        price, _ = fn(qty, vwap=vwap)
-        return price
+            return PriceEstimator._zero_pair()
 
+        fn = ob.ask_price_for_qty if buy else ob.bid_price_for_qty
+        price, worst_lvl_sz = fn(qty, vwap=vwap)  # второй элемент уже то, что нужно
+        if price in (0, None):
+            return PriceEstimator._zero_pair()
+
+        # worst_lvl_sz может быть None, если qty не заполнился целиком
+        return price, (worst_lvl_sz or Decimal("0"))
+
+    # -------------------- REST-фоллбэк ---------------------------
     @staticmethod
-    def from_rest(symbol: str,
-                  qty: Union[int, float, str, Decimal],
-                  *,
-                  buy: bool = True,
-                  depth: int = 200,
-                  vwap: bool = True,
-                  testnet: bool = False,
-                  http_session: Optional[HTTP] = None
-                  ) -> Optional[Decimal]:
+    def from_rest(
+        symbol: str,
+        qty: Union[int, float, str, Decimal],
+        *,
+        buy: bool = True,
+        depth: int = 200,
+        vwap: bool = True,
+        testnet: bool = False,
+        http_session: Optional[HTTP] = None,
+    ) -> Tuple[Optional[Decimal], Optional[Decimal]]:
         """
-        REST-fallback (до 200 уровней). Возвращает None, если видимого
-        объёма не хватает.
+        REST-фоллбэк (до 200 уровней).  
+        Если объёма не хватает, возвращает (None, None).
         """
         qty_d = Decimal(str(qty))
         sess  = http_session or HTTP(testnet=testnet)
         side  = "a" if buy else "b"
         resp  = sess.get_orderbook(category="option", symbol=symbol, limit=depth)
-        levels = [
-            (Decimal(str(p)), Decimal(str(q))) for p, q in resp.get("result", {}).get(side, [])
-        ]
-        if not levels:
-            return None
+        levels_raw = resp.get("result", {}).get(side, [])
+        if not levels_raw:
+            return PriceEstimator._zero_pair()
 
-        # accumulate
-        left = qty_d
-        cost = Decimal("0")
+        levels = [(Decimal(str(p)), Decimal(str(q))) for p, q in levels_raw]
+
+        left                = qty_d
+        cost                = Decimal("0")
+        worst_px            = Decimal("0")
+        worst_level_size    = Decimal("0")
+
         for px, sz in levels:
             if left <= 0:
                 break
-            take = sz if sz <= left else left
+            take  = sz if sz <= left else left
             cost += take * px
+            worst_px         = px
+            worst_level_size = sz
             left -= take
-        if left > 0:
-            return None
-        return cost / qty_d if vwap else px  # type: ignore
 
+        if left > 0:  # объёма недостаточно
+            return PriceEstimator._zero_pair()
+
+        price = (cost / qty_d) if vwap else worst_px
+        return price, worst_level_size
+
+    # -------------------- смарт-оценка ---------------------------
     @staticmethod
-    def smart(symbol: str,
-              qty: Union[int, float, str, Decimal],
-              *,
-              buy: bool = True,
-              depth_rest: int = 200,
-              vwap: bool = True,
-              testnet: bool = False,
-              http_session: Optional[HTTP] = None
-              ) -> Optional[Decimal]:
+    def smart(
+        symbol: str,
+        qty: Union[int, float, str, Decimal],
+        *,
+        buy: bool = True,
+        depth_rest: int = 200,
+        vwap: bool = True,
+        testnet: bool = False,
+        http_session: Optional[HTTP] = None,
+    ) -> Tuple[Optional[Decimal], Optional[Decimal]]:
         """
-        1) пробует локальный стакан; 2) если недостаточно – REST.
+        1) Пробует локальный стакан;  
+        2) Если объёма не хватает – обращается к REST-стакану.
+
+        Возвращает (price, max_qty_at_price).
         """
-        price = PriceEstimator.from_local(symbol, qty, buy=buy, vwap=vwap)
+        price, max_qty = PriceEstimator.from_local(
+            symbol, qty, buy=buy, vwap=vwap
+        )
         if price is not None:
-            return price
-        return PriceEstimator.from_rest(symbol, qty,
-                                        buy=buy, depth=depth_rest,
-                                        vwap=vwap,
-                                        testnet=testnet,
-                                        http_session=http_session)
+            return price, max_qty
+
+        return PriceEstimator.from_rest(
+            symbol,
+            qty,
+            buy=buy,
+            depth=depth_rest,
+            vwap=vwap,
+            testnet=testnet,
+            http_session=http_session,
+        )
+
 
 # ----------------------------------------------------------------------
 #                       7.  PUBLIC FACADE
@@ -1260,3 +1303,93 @@ def update_leg_subscriptions(stages: Dict[str, dict]) -> None:
         if sym not in desired:
             feed._subscribed.remove(sym)
             log.info("Removed %s from subscription list", sym)
+
+
+# ----------------------------------------------------------------------
+#        WATCHDOG: ensure_option_feed_alive (перезапуск WS-фида)
+# ----------------------------------------------------------------------
+def ensure_option_feed_alive(*,
+                             staleness_sec: int = 25,
+                             log_level: int = logging.WARNING) -> None:
+    """
+    «Сторожок» для WebSocket-фида опционов Bybit.
+
+    Вызывать из главного цикла примерно раз в 10-20 с:
+
+        while True:
+            ...
+            ensure_option_feed_alive()          # <─ здесь
+            time.sleep(1)
+
+    Параметры
+    ---------
+    staleness_sec : int
+        Максимально допустимое «молчание» (сек) по ЛЮБОМУ подписанному
+        символу.  Если данных нет дольше, чем staleness_sec, WebSocket
+        перезапускается *без* потери списка подписок.
+    log_level : int
+        Уровень, на котором будет выведено уведомление о перезапуске.
+    """
+    feed = MarketDataFeed._INSTANCE           # type: Optional[MarketDataFeed]
+    if feed is None:                          # ещё не инициализировали
+        return
+
+    # --------------------------------------------------------------
+    # 1. Ищем самый «свежий» snapshot среди всех подписанных символов
+    # --------------------------------------------------------------
+    now_ms    = int(time.time() * 1000)
+    newest_ts: Optional[int] = None
+
+    for sym in list(feed._subscribed):
+        snap = feed.get_ticker(sym) or feed.get_orderbook(sym)
+        ts   = getattr(snap, "updated_ts", None) if snap else None
+        if ts is None:
+            continue
+        if newest_ts is None or ts > newest_ts:
+            newest_ts = ts
+
+    # Если нет ни одного снапшота — только запустились; это нормально.
+    if newest_ts is None:
+        return
+
+    if now_ms - newest_ts <= staleness_sec * 1000:
+        return                                # всё живо
+
+    # --------------------------------------------------------------
+    # 2. Считаем поток «мертвым» → перезапускаем.
+    # --------------------------------------------------------------
+    logging.log(
+        log_level,
+        "Bybit Option feed: последняя активность %.1f с назад "
+        "(порог %d с) — перезапускаю WebSocket.",
+        (now_ms - newest_ts) / 1000.0,
+        staleness_sec,
+    )
+
+    # сохраняем параметры текущего фида
+    params = dict(
+        testnet            = feed.testnet,
+        orderbook_depth    = feed.orderbook_depth,
+        subscribe_orderbook= feed.subscribe_orderbook,
+        api_key            = feed.api_key,
+        api_secret         = feed.api_secret,
+        ping_interval      = feed.ping_interval,
+        ping_timeout       = feed.ping_timeout,
+        retries            = feed.retries,
+    )
+    subscribed = list(feed._subscribed)
+
+    # аккуратно останавливаем старый фид
+    feed.stop()                               # освобождает ресурсы и обнуляет singleton
+
+    # создаём новый с теми же параметрами
+    new_feed = MarketDataFeed.instance(**params)
+
+    # возвращаем все прежние подписки
+    if subscribed:
+        new_feed.add_symbols(subscribed)
+
+    logging.info(
+        "Bybit Option feed: перезапуск завершён, повторно подписано символов: %d.",
+        len(subscribed),
+    )

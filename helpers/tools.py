@@ -1,5 +1,6 @@
 from datetime import datetime, timezone, timedelta, date
-from typing import Any, Dict, Tuple, List
+from typing import Any, Dict, Tuple, List, Literal, Optional
+import math
 import bisect
 
 def calc_futures_qty(
@@ -484,3 +485,105 @@ def filter_options_by_distance(
             filtered.append(opt)
 
     return filtered
+
+def option_ask_indicator(
+    hours_to_exp: float,
+    strike_price: float,
+    current_price: float,
+    ask_price: float,
+    option_type: Literal["call", "put"],
+    rel_atr: Optional[float] = None,
+    *,
+    epsilon: float = 1e-6,
+) -> float:
+    """
+    Индикатор выгодности ask-цены для опционов с оставшимся сроком ≤ 24 ч.
+
+    ПАРАМЕТРЫ
+    ---------
+    hours_to_exp : float
+        Часы до экспирации (0 < … ≤ 24).
+    strike_price : float
+        Страйк опциона.
+    current_price : float
+        Рыночная цена базового актива.
+    ask_price : float
+        Ask-цена опциона.
+    option_type : {"call", "put"}
+        Тип опциона.
+    rel_atr : float | None, optional
+        Относительный ATR последних 24 часов (ATR / price).  
+        • Если передан None или ≤ 0 — волатильностная нормировка отключается.  
+        • Можно передать оценку имплайд-волы в процентах (например, IV ≈ σ₁d).
+    epsilon : float, optional
+        Защита от деления на ноль.
+
+    ВОЗВРАЩАЕТ
+    ----------
+    float
+        < 1  — премия статистически дёшева;  
+        ≈ 1  — справедлива;  
+        > 1  — дорога.
+    """
+    # ---- Валидация ----
+
+    if current_price <= 0 or ask_price < 0:
+        raise ValueError("current_price must be > 0 and ask_price ≥ 0.")
+    opt = option_type.lower()
+    if opt not in ("call", "put"):
+        raise ValueError("option_type must be 'call' or 'put' (case-insensitive).")
+
+    # ---- 1.   Внутренняя и внешняя стоимость ----
+    intrinsic = max(
+        current_price - strike_price, 0.0
+    ) if opt == "call" else max(
+        strike_price - current_price, 0.0
+    )
+    extrinsic = max(ask_price - intrinsic, 0.0)
+    if extrinsic < epsilon:
+        return 0.0  # почти нет внешней стоимости – «дёшево»
+
+    # ---- 2.   Премия за час в относительных единицах ----
+    prem_per_hour = extrinsic / current_price / hours_to_exp
+
+    # ---- 3.   Нормировка на волатильность (опционально) ----
+    if rel_atr and rel_atr > epsilon:
+        vol_per_hour = rel_atr / 24.0           # σ̂ _hour
+        R = prem_per_hour / vol_per_hour
+    else:
+        R = prem_per_hour / epsilon            # условно «без волы»
+
+    # ---- 4.   Moneyness-фактор для OTM-части ----
+    if opt == "call":
+        dist_pct = max(strike_price - current_price, 0.0) / current_price
+    else:
+        dist_pct = max(current_price - strike_price, 0.0) / current_price
+
+    if rel_atr and rel_atr > epsilon:
+        expected_move_pct = rel_atr * math.sqrt(hours_to_exp / 24.0)
+    else:                                       # если вола неизвестна
+        expected_move_pct = epsilon             # ≈ без коррекции
+    expected_move_pct = max(expected_move_pct, epsilon)
+
+    F = 1.0 + dist_pct / expected_move_pct
+
+    # ---- 5.   Финальный индикатор ----
+    return R * F
+
+
+
+def dict_to_pretty_string(data: dict, indent: int = 0) -> str:
+    """
+    Convert a nested dict into an indented, human-readable string.
+    Floats are rounded to 2 decimal places.
+    """
+    lines = []
+    prefix = "  " * indent
+    for key, value in data.items():
+        if isinstance(value, dict):
+            lines.append(f"{prefix}{key}:")
+            lines.append(dict_to_pretty_string(value, indent + 1))
+        else:
+            display_value = round(value, 4) if isinstance(value, float) else value
+            lines.append(f"{prefix}{key}: {display_value}")
+    return "\n".join(lines)

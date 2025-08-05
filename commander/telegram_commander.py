@@ -47,7 +47,20 @@ async def amount(cont: str, pos) -> None:
             await tel.send_inform_message("COLLECTOR_API", f"New base amount second: {cont}", "", False)
     except Exception as e:
         print(e)
-        
+
+
+async def types(type_P_C: str, flag_0_1: str):
+    flag = int(flag_0_1)
+    commands = {}
+    if type_P_C == 'P':
+        commands = Commands.set_put(flag)
+    elif type_P_C == 'C':
+        commands = Commands.set_call(flag)
+    await tel.send_inform_message("COLLECTOR_API", f"{tools.dict_to_pretty_string(commands.__dict__)}", "", False)
+    
+    
+    
+    
 async def expect(val: str, pos) -> None:
     try:
         p=int(pos)
@@ -60,16 +73,25 @@ async def expect(val: str, pos) -> None:
     except Exception as e:
         print(e)
 
+async def simulation(flag_0_1: str) -> None:
+    flag = int(flag_0_1)
+    commands = Commands.set_simulation(flag)
+    await tel.send_inform_message("COLLECTOR_API", f"{tools.dict_to_pretty_string(commands.__dict__)}", "", False)
 
 async def symb(symb: str, flag_0_1: str) -> None:
     symbol = symb.upper()
     flag = int(flag_0_1)
+    commands = {}
     if symbol == 'BTC':
-        Commands.set_btc(flag)
+        commands = Commands.set_btc(flag)
     if symbol == 'ETH':
-        Commands.set_eth(flag)
+        commands = Commands.set_eth(flag)
     if symbol == 'SOL':
-        Commands.set_sol(flag)
+        commands = Commands.set_sol(flag)
+    await tel.send_inform_message("COLLECTOR_API", f"{tools.dict_to_pretty_string(commands.__dict__)}\n\nmain.py will be restarted", "", False)
+    await off()
+    await asyncio.sleep(8)
+    await start()
 
 async def close(pos) -> None:
     p=int(pos)
@@ -148,6 +170,8 @@ def init_commander():
     sv.commander.add_command(["expect"], expect)
     sv.commander.add_command(["pids"], get_pids)
     sv.commander.add_command(["com"], commands_db)
+    sv.commander.add_command(["types"], types)
+    sv.commander.add_command(["simulation"], simulation)
     sv.commander.add_command(["symb"], symb)
     sv.commander.add_command(["stat"], stat)
     sv.commander.add_command(["run"], start)
