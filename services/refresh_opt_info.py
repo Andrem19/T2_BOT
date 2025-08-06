@@ -53,7 +53,7 @@ async def refresh_opt(counter):
 
                         raw_bid, max_qty_at_price  = ob.bid_price_for_qty(leg['contracts'], vwap=False)
 
-                        real_bid = tools.safe_float(raw_bid, 0.0)
+                        real_bid = safe_float(raw_bid, 0.0)
                         avg_px   = leg['info'].get('avgPrice', 0.0)
                         size     = leg['contracts']
 

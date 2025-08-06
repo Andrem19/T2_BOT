@@ -20,6 +20,7 @@ def define_sim_pos(new_simulation: dict):
     
 async def search(which_pos_we_need: str):
     try:
+        start = datetime.now().timestamp()
         sv.stages['simulation']['we_need'] = which_pos_we_need
         best_position = {
             'type': 'Put',
@@ -41,7 +42,7 @@ async def search(which_pos_we_need: str):
             if k not in sv.symbols:
                 continue
             logger.info(f'Start calculation for {k} {which_pos_we_need}')
-            start = datetime.now().timestamp()
+            
 
             klines_1h = CandleCache.get(f"{k}USDT", 60)
             last_price = PriceCache.get(f"{k}USDT")
@@ -57,21 +58,20 @@ async def search(which_pos_we_need: str):
             day_opt = 0 if h >= 0 and h < 8 else 1
             opt_day_1, _ = tools.get_next_friday_day(day_opt)
             
-            filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
-            
-            filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
             
             filtered_chain_0 = []
             
             if 'put' in sv.opt_types:
+                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
                 filtered_chain_0.extend(filtered_chain_puts)
             if 'call' in sv.opt_types:
+                filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
                 filtered_chain_0.extend(filtered_chain_calls)
             
             left_to_exp = tools.time_to_expiry(filtered_chain_0[0]['deliveryTime'])
             sv.stages['simulation']['time_to_exp'] = left_to_exp
             
-            distance = 0.018 if left_to_exp < 10 else 0.025 if left_to_exp < 15 else 0.03
+            distance = 0.018 if left_to_exp < 10 else 0.023 if left_to_exp < 15 else 0.028
             filtered_chain_0 = tools.filter_options_by_distance(filtered_chain_0, distance)
             
             amount_for_est = 1 if which_pos_we_need =='nothing' else sv.stages[which_pos_we_need]['amount']*v['kof']
@@ -79,7 +79,7 @@ async def search(which_pos_we_need: str):
                 try:
                     ask_raw, max_qty = BB.Estimator.smart(f['symbol'], qty=amount_for_est, buy=True)
                     ask_val = ask_raw if isinstance(ask_raw, (int, float)) else f.get("askPrice", 0)
-                    print('ask_val', f.get('symbol'), ask_val)
+                    # print('ask_val', f.get('symbol'), ask_val)
                     f['askPrice'] = float(ask_val)
                     f['askSize'] = float(max_qty)
                 except Exception as e:
@@ -153,10 +153,12 @@ async def search(which_pos_we_need: str):
                                 best_position['ask_original'] = ask
                                 best_position['max_amount'] = o['askSize']
                                 best_position['pnl'] = pnl
-                                print(pnl)
                                 define_sim_pos(copy.deepcopy(best_position))
+                    
                 except Exception as e:
                     logger.exception(f'SEARCH INNER LOOP ERROR: {e}\n\n{traceback.format_exc()}')
+        speed_sec = (datetime.now().timestamp() - start)
+        logger.info(f'speed: {speed_sec}')
     except Exception as e:
         logger.exception(f'SEARCH ERROR: {e}\n\n{traceback.format_exc()}')
                         

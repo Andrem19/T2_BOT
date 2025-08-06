@@ -202,6 +202,8 @@ def index(ask: float, strike: float, hours_to_exp: float, last_px: float, opt_ty
     return ((hours_to_exp/perc)/(ask/last_px))*(1/last_px)
 
 
+
+
 def get_next_friday_day(days: int = 4) -> Tuple[str, int]:
     """
     Возвращает строку вида '15JUL' — день и трёхбуквенную аббревиатуру месяца

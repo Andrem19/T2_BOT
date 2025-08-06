@@ -7,6 +7,7 @@ import traceback
 def run_logic(data, fut_calc, params):
     start_idx    = 1800
     end_idx      = len(data) - 5000
+    quarter = end_idx//4
 
     i = start_idx
     while i < end_idx:
@@ -23,6 +24,9 @@ def run_logic(data, fut_calc, params):
             if result is None:
                 return
             sv.data_list.append(result)
+            
+            if i > quarter and sv.sum < 0:
+                return
             
             i = it + 1
 

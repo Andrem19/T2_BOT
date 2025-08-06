@@ -17,5 +17,6 @@ def simulation(data, fut_calc, params: dict):
 
 
     sv.data_list.clear()
+    sv.sum = 0
     
     return best_stats, stats['pnl_per_day'], stats['trades_total']

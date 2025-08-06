@@ -14,9 +14,7 @@ from telegram.error import NetworkError, RetryAfter, TimedOut
 from telegram.request import HTTPXRequest
 from decouple import config
 
-from helpers.price_feed import start_price_stream, PriceCache, get_kline
-from helpers.option_chain import get_option_chain_full
-import helpers.option_trade_tools as opt_tools
+
 from database.commands_tab import Commands
 import helpers.tools as tools
 import helpers.tlg as tel  # в проекте уже есть враппер

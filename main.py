@@ -90,7 +90,6 @@ async def main():
             which_pos_we_need = open_opt.get_required_position()
             if counter%6==0 and sv.simulation:
                 await search.search(which_pos_we_need)
-                print(ts.dict_to_pretty_string(sv.stages['simulation']))
             
             #===========OPEN POSITION==============
             

@@ -266,7 +266,7 @@ root.addHandler(file_handler)
 logger = logging.getLogger(__name__)
 #================LOGER END=============================
 
-
+sum = 0
 data_list = []
 #==================FLAGS===============================
 timer_msg = 600

@@ -1,5 +1,6 @@
 import math
 import traceback
+import shared_vars as sv
 
 
 def simulation(data, i, fut_calc, params, end_idx):
@@ -99,6 +100,7 @@ def simulation(data, i, fut_calc, params, end_idx):
             "pos_values_pnl": pnl,
             "total_pnl": all_fees+pnl
         }
+        sv.sum +=pnl
         
         return result, it
     except Exception as e:
