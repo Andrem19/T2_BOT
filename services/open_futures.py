@@ -29,9 +29,9 @@ async def open_futures(position: dict, which_pos_we_need: str):
         side = 'Buy' if position['type'] == 'put' else 'Sell'
         HL.open_market_order(symbol, side, 0, False, fut_amt, acc)
         for _ in range(3):
-            position = HL.get_position(symbol, acc)
-            if position:
-                new_position = position
+            new_position = HL.get_position(symbol, acc)
+            if new_position:
+                break
             await asyncio.sleep(4)
         
         if new_position and new_position.get('size', 0) > 0:

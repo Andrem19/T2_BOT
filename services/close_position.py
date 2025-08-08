@@ -17,7 +17,7 @@ async def close_position_fully(pos_name, reason, last_px):
     
     acc = 2 if pos_name =='first' else 1
     symbol_fut = sv.stages[pos_name]['base_coin'] + 'USDT'
-    if reason != 'no_fut':
+    if not 'no_fut' in reason:
         HL.cancel_all_orders(symbol_fut, acc)
         position = HL.get_position(symbol_fut, acc)
         try:
@@ -28,7 +28,7 @@ async def close_position_fully(pos_name, reason, last_px):
         if abs(fut_size) >= 1e-9:
             await close_futures(acc, symbol_fut, pos_name, fut_size)
     
-    if reason != 'tp_hit' and reason != 'no_opt':
+    if reason == 'no_fut_sl' or reason == 'sl_hit' or reason == 'pnl_hit_opt':
         await close_option(acc, reason, pos_name)
     
     # обнулить состояние
@@ -60,7 +60,7 @@ async def close_futures(acc, symbol_fut, pos_name, fut_size):
         await asyncio.sleep(1)
         
         logger.info(
-            "%s FCLOSE FUT %s pos_name=%s qty=%s side=%s px_exec≈%s",
+            "%s CLOSE FUT %s pos_name=%s qty=%s side=%s px_exec≈%s",
             pos_name, symbol_fut, pos_name, amt_base, side_fx, px_exec,
         )
         return {"tx_sig": tx_sig, "px": px_exec}
@@ -72,7 +72,7 @@ async def close_futures(acc, symbol_fut, pos_name, fut_size):
 async def close_option(acc, reason, pos_name):
     try:
         symbol = sv.stages[pos_name]['position']['leg']['name']
-        size = sv.stages[pos_name]['position']['leg']['size']
+        size = sv.stages[pos_name]['position']['leg']['info']['size']
         side = "Sell"
         
         snapshot = BB.Chain.get_snapshot(symbol=symbol, testnet=False, with_greeks=False)
@@ -96,7 +96,7 @@ async def close_option(acc, reason, pos_name):
         if len(open_options)>0:
             try:
                 link_id = f"monflat-{uuid.uuid4().hex[:10]}"
-                resp_ = BB.Trading.place_limit_order(
+                resp = BB.Trading.place_limit_order(
                     account_idx=acc,
                     symbol=symbol,
                     side=side,

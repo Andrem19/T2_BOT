@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates        # ← NEW
 import pandas as pd
 import numpy as np
 from collections import defaultdict
@@ -202,26 +203,21 @@ def visualize_trade_stats(  # ← главное “API”
     """
     Строит ключевые графики по сделкам и сохраняет их в PNG-файлы.
 
-    Parameters
-    ----------
-    trades
-        Список исходных сделок (те же словари, что и для `compute_trade_stats`).
-    stats
-        Результат `compute_trade_stats` — передаётся для потенциального
-        расширения (пока используется только для названия окна на графиках).
-    out_dir
-        Папка, куда складываются PNG. Создаётся при необходимости.
-        Старые файлы с теми же именами перезаписываются.
+    См. подробности в docstring исходной версии. Логика осталась прежней,
+    но три графика переработаны:
 
-    Returns
-    -------
-    Dict[str, str]
-        Ключ → абсолютный путь до сохранённого PNG.
+      • Cumulative PnL – теперь начинается с нуля (step-plot «post»).
+      • Distribution of Trade PnL – раздельные гистограммы profit / loss,
+        добавлены легенда и ось 0.
+      • Daily Net Profit – столбцы окрашиваются по знаку, добавлены ось 0,
+        форматирование дат через mdates.
+
+    Остальные графики (RSI / rel_ATR) без изменений.
     """
-    # ──────────────────────────────────────────────────────────────────── setup
+    # ─────────────────────────────────────────────────────────────── setup
     os.makedirs(out_dir, exist_ok=True)
     df = pd.DataFrame(trades)
-    if df.empty:  # нечего рисовать
+    if df.empty:
         return {}
 
     # корректное время сделки (закрытие > открытие, если оно NaT)
@@ -231,61 +227,82 @@ def visualize_trade_stats(  # ← главное “API”
     )
     df = df.sort_values("effective_time")
 
-    chart_paths: Dict[str, str] = {}  # ← итог
+    chart_paths: Dict[str, str] = {}
 
-    # Имя периода для заголовков (если stats передан из compute_trade_stats)
+    # Имя периода для заголовков
     period_label = ""
-    if stats and isinstance(stats, dict):
+    if isinstance(stats, dict):
         wnd = stats.get("period", {})
         if wnd:
-            period_label = (
-                f' ({wnd.get("window_start", "")} … {wnd.get("now", "")})'
-            )
+            period_label = f' ({wnd.get("window_start", "")} … {wnd.get("now", "")})'
 
-    # ─────────────────────────────────────────────────────────── 1. PnL curve
+    # ─────────────────────────────────────────────── 1. Cumulative PnL curve
     pnl_curve_path = os.path.join(out_dir, "pnl_curve.png")
+    cum_profit = df["profit"].cumsum().to_numpy()
+    times = df["effective_time"].to_numpy()
+
+    # вставляем начальную точку «0» в момент первой сделки
+    times_ext = np.insert(times, 0, times[0])
+    cum_ext = np.insert(cum_profit, 0, 0.0)
+
     plt.figure()
-    plt.plot(df["effective_time"], df["profit"].cumsum(), marker="o")
+    plt.step(times_ext, cum_ext, where="post", marker="o")
+    plt.axhline(0, linewidth=0.8, color="grey")
     plt.xlabel("Time")
     plt.ylabel("Cumulative PnL")
     plt.title(f"Cumulative PnL{period_label}")
-    plt.grid(True)
+    plt.grid(True, axis="y")
     plt.tight_layout()
     plt.savefig(pnl_curve_path, dpi=150, bbox_inches="tight")
     plt.close()
     chart_paths["pnl_curve"] = os.path.abspath(pnl_curve_path)
 
-    # ───────────────────────────────────────────────────────── 2. Histogram
+    # ───────────────────────────────────────── 2. Distribution of Trade PnL
     hist_path = os.path.join(out_dir, "profit_histogram.png")
+    pos = df["profit"][df["profit"] > 0]
+    neg = df["profit"][df["profit"] <= 0]
+    bins = max(5, min(50, len(df)))
+
     plt.figure()
-    bins = max(5, min(50, len(df) // 2))  # разумный динамический выбор
-    plt.hist(df["profit"], bins=bins)
+    plt.hist(pos, bins=bins, alpha=0.7, color="green",
+             label=f"Profitable ({len(pos)})")
+    plt.hist(neg, bins=bins, alpha=0.7, color="red",
+             label=f"Unprofitable ({len(neg)})")
+    plt.axvline(0, color="black", linewidth=1)
     plt.xlabel("Trade Profit")
     plt.ylabel("Frequency")
     plt.title(f"Distribution of Trade PnL{period_label}")
-    plt.grid(True)
+    plt.legend()
+    plt.grid(True, axis="y")
     plt.tight_layout()
     plt.savefig(hist_path, dpi=150, bbox_inches="tight")
     plt.close()
     chart_paths["profit_histogram"] = os.path.abspath(hist_path)
 
-    # ─────────────────────────────────────────────────────── 3. Daily profit
+    # ──────────────────────────────────────────────── 3. Daily Net Profit
     daily_path = os.path.join(out_dir, "daily_net_profit.png")
     df["date"] = df["effective_time"].dt.date
     daily_profit = df.groupby("date")["profit"].sum()
+    dates = pd.to_datetime(daily_profit.index)
+
+    colors = ["green" if v > 0 else "red" for v in daily_profit.values]
+
     plt.figure()
-    plt.bar(daily_profit.index, daily_profit.values)
+    plt.bar(dates, daily_profit.values, color=colors)
+    plt.axhline(0, linewidth=0.8, color="black")
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+    plt.gca().xaxis.set_major_locator(mdates.AutoDateLocator())
     plt.xlabel("Date")
     plt.ylabel("Net Profit")
     plt.title(f"Daily Net Profit{period_label}")
     plt.xticks(rotation=45, ha="right")
-    plt.grid(True, axis="y")
+    plt.grid(True, axis="y", linestyle=":")
     plt.tight_layout()
     plt.savefig(daily_path, dpi=150, bbox_inches="tight")
     plt.close()
     chart_paths["daily_net_profit"] = os.path.abspath(daily_path)
 
-    # ───────────────────────────────────────────────────────── 4. RSI scatter
+    # ────────────────────────────────────────────────── 4. RSI scatter
     if "rsi" in df.columns and df["rsi"].notna().any():
         rsi_path = os.path.join(out_dir, "rsi_vs_profit.png")
         plt.figure()
@@ -299,7 +316,7 @@ def visualize_trade_stats(  # ← главное “API”
         plt.close()
         chart_paths["rsi_vs_profit"] = os.path.abspath(rsi_path)
 
-    # ──────────────────────────────────────────────────── 5. rel_ATR scatter
+    # ─────────────────────────────────────────────── 5. rel_ATR scatter
     if "rel_atr" in df.columns and df["rel_atr"].notna().any():
         atr_path = os.path.join(out_dir, "rel_atr_vs_profit.png")
         plt.figure()
@@ -314,3 +331,4 @@ def visualize_trade_stats(  # ← главное “API”
         chart_paths["rel_atr_vs_profit"] = os.path.abspath(atr_path)
 
     return chart_paths
+

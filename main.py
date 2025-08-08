@@ -13,6 +13,7 @@ from exchanges.bybit_option_hub import BybitOptionHub as BB
 from exchanges.bybit_option_hub import update_leg_subscriptions, ensure_option_feed_alive
 import services.monitoring as monitoring
 import services.open_option as open_opt
+import helpers.tlg as tlg
 import services.open_futures as open_fut
 import services.search as search
 import services.refresh_fut_info as refresh_fut
@@ -94,15 +95,17 @@ async def main():
             #===========OPEN POSITION==============
             
             if which_pos_we_need != 'nothing' and datetime.now().hour not in [4,5,6,7]:
+                
                 best_simulation = sv.stages['simulation']['position_1']
+                
                 if best_simulation['pnl'] >= sv.stages[which_pos_we_need]['expect']:
+                    print(best_simulation)
                     opt_is_open = await open_opt.open_opt(best_simulation, which_pos_we_need)
                     if opt_is_open:
                         fut_is_open = await open_fut.open_futures(best_simulation, which_pos_we_need)
-                    
-                    if fut_is_open:
-                        serv.save_stages(sv.stages)
-                        await safe_send('COLLECTOR_API', f"✅✅✅\nPosition was opened SUCCESSFULY!!!\n\n{ts.dict_to_pretty_string(sv.stages['simulation']['position_1'])}", '', False)
+                        if fut_is_open:
+                            serv.save_stages(sv.stages)
+                            await tlg.send_option_message('COLLECTOR_API', f"✅✅✅\nPosition was opened SUCCESSFULY!!!\n\n{serv.format_option_message_html(sv.stages['simulation']['position_1'])}", '', False)
 
             #===========MONITORING=================
             
@@ -110,13 +113,14 @@ async def main():
                 fb_dict = serv.get_state_dict(sv.stages)
                 fw.write(fb_dict)
             except Exception as e:
-                logger.exception(str(e))
+                logger.exception(f'ERROR when saving stages in realtime database: {e}')
             
             ensure_streams_alive_for_symbols(symbs, max_stale_seconds=30)
             
             if sv.stages['second']['exist']:
                 last_pr = PriceCache.get(sv.stages['second']['base_coin'] + 'USDT')
                 await monitoring.process_position(last_pr, 'second')
+                
             if sv.stages['first']['exist']:
                 last_pr = PriceCache.get(sv.stages['first']['base_coin'] + 'USDT')
                 await monitoring.process_position(last_pr, 'first')

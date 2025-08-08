@@ -22,7 +22,8 @@ from aiohttp import web
 import commander.process_utils as proc
 from database.hist_trades import Trade
 from helpers.statistics import compute_trade_stats, visualize_trade_stats
-
+import httpx
+from packaging import version as _pver
 
 import copy
 import os
@@ -48,13 +49,16 @@ async def amount(cont: str, pos) -> None:
 
 
 async def types(type_P_C: str, flag_0_1: str):
-    flag = int(flag_0_1)
-    commands = {}
-    if type_P_C == 'P':
-        commands = Commands.set_put(flag)
-    elif type_P_C == 'C':
-        commands = Commands.set_call(flag)
-    await tel.send_inform_message("COLLECTOR_API", f"{tools.dict_to_pretty_string(commands.__dict__)}", "", False)
+    try:
+        flag = int(flag_0_1)
+        commands = {}
+        if type_P_C == 'p':
+            commands = Commands.set_put(flag)
+        elif type_P_C == 'c':
+            commands = Commands.set_call(flag)
+        await tel.send_inform_message("COLLECTOR_API", f"{commands}", "", False)
+    except Exception as e:
+        print(e)
     
     
     
@@ -74,7 +78,7 @@ async def expect(val: str, pos) -> None:
 async def simulation(flag_0_1: str) -> None:
     flag = int(flag_0_1)
     commands = Commands.set_simulation(flag)
-    await tel.send_inform_message("COLLECTOR_API", f"{tools.dict_to_pretty_string(commands.__dict__)}", "", False)
+    await tel.send_inform_message("COLLECTOR_API", f"{commands}", "", False)
 
 async def symb(symb: str, flag_0_1: str) -> None:
     symbol = symb.upper()
@@ -86,7 +90,7 @@ async def symb(symb: str, flag_0_1: str) -> None:
         commands = Commands.set_eth(flag)
     if symbol == 'SOL':
         commands = Commands.set_sol(flag)
-    await tel.send_inform_message("COLLECTOR_API", f"{tools.dict_to_pretty_string(commands.__dict__)}\n\nmain.py will be restarted", "", False)
+    await tel.send_inform_message("COLLECTOR_API", f"{commands}\n\nmain.py will be restarted", "", False)
     await off()
     await asyncio.sleep(8)
     await start()
@@ -116,6 +120,15 @@ async def stat(days: str):
         for k, v in paths.items():
             await tel.send_inform_message("COLLECTOR_API", f"", v, True)
             await asyncio.sleep(2)
+    except Exception as e:
+        print(e)
+
+async def stattext(days: str):
+    try:
+        hist = Trade.all()
+        hist_dicts = [vars(obj) for obj in hist]  # включая id
+        stat = compute_trade_stats(hist_dicts, int(days), False)
+        await tel.send_inform_message("COLLECTOR_API", f'{tools.dict_to_pretty_string(stat)}', '', False)
     except Exception as e:
         print(e)
 
@@ -172,6 +185,7 @@ def init_commander():
     sv.commander.add_command(["simulation"], simulation)
     sv.commander.add_command(["symb"], symb)
     sv.commander.add_command(["stat"], stat)
+    sv.commander.add_command(["statt"], stattext)
     sv.commander.add_command(["run"], start)
     sv.commander.add_command(["off"], off)
 

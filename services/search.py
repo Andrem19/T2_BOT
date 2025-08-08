@@ -60,18 +60,18 @@ async def search(which_pos_we_need: str):
             
             
             filtered_chain_0 = []
-            
-            if 'put' in sv.opt_types:
-                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
-                filtered_chain_0.extend(filtered_chain_puts)
             if 'call' in sv.opt_types:
                 filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
                 filtered_chain_0.extend(filtered_chain_calls)
+            if 'put' in sv.opt_types:
+                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
+                filtered_chain_0.extend(filtered_chain_puts)
+
             
             left_to_exp = tools.time_to_expiry(filtered_chain_0[0]['deliveryTime'])
             sv.stages['simulation']['time_to_exp'] = left_to_exp
             
-            distance = 0.018 if left_to_exp < 10 else 0.023 if left_to_exp < 15 else 0.028
+            distance = 0.014 if left_to_exp < 10 else 0.018 if left_to_exp < 15 or which_pos_we_need == 'second' else 0.024
             filtered_chain_0 = tools.filter_options_by_distance(filtered_chain_0, distance)
             
             amount_for_est = 1 if which_pos_we_need =='nothing' else sv.stages[which_pos_we_need]['amount']*v['kof']
@@ -153,6 +153,7 @@ async def search(which_pos_we_need: str):
                                 best_position['ask_original'] = ask
                                 best_position['max_amount'] = o['askSize']
                                 best_position['pnl'] = pnl
+                                print(mode, pnl)
                                 define_sim_pos(copy.deepcopy(best_position))
                     
                 except Exception as e:

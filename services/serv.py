@@ -6,6 +6,8 @@ import math
 import talib
 from shared_vars import logger
 import numpy as np
+from html import escape
+from typing import Any, Dict, List
 from datetime import datetime, timedelta, timezone
 
 TEMP_FILE_PATH = "params_temp.json"
@@ -168,3 +170,93 @@ def get_state_dict(stages):
         'stages': stages,
     }
         
+from html import escape
+from typing import Any, Dict, List
+
+def format_option_message_html(data: Dict[str, Any]) -> str:
+    """
+    Возвращает HTML-строку для Telegram (отправлять с parse_mode=HTML).
+    Исключает: name, pnl_upper, qty, type.
+    Преобразует ключи в человекочитаемый вид (Strike Perc вместо strike_perc).
+    Жирным: 'pnl', 'strike_perc'.
+    Визуальная "раскраска" полей через цветные эмодзи.
+    """
+    EXCLUDE_KEYS = {"name", "pnl_upper", "qty", "type"}
+    BOLD_FIELDS = {"pnl", "strike_perc"}
+
+    FIELD_ORDER: List[str] = [
+        "symbol",
+        "strike_perc",
+        "pnl",
+        "ask_indicators",
+        "p_t",
+        "lower_perc",
+        "upper_perc",
+        "best_targ_bid",
+        "ask",
+        "ask_original",
+        "max_amount",
+    ]
+
+    COLOR_MARKS: Dict[str, str] = {
+        "symbol": "🔷",
+        "strike_perc": "🟦",
+        "pnl": "🟩",
+        "ask_indicators": "🟣",
+        "p_t": "🟪",
+        "lower_perc": "🟠",
+        "upper_perc": "🟡",
+        "best_targ_bid": "🔵",
+        "ask": "🟤",
+        "ask_original": "🔶",
+        "max_amount": "⬛",
+    }
+    DEFAULT_MARK = "⬜"
+
+    def _format_number(val: float) -> str:
+        if abs(val) >= 100:
+            return f"{val:,.2f}".replace(",", " ")
+        s = f"{val:.4f}".rstrip("0").rstrip(".")
+        return s if s else "0"
+
+    def _format_value(value: Any) -> str:
+        if isinstance(value, float):
+            return _format_number(value)
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, list):
+            parts = []
+            for x in value:
+                if isinstance(x, (int, float)):
+                    parts.append(_format_number(float(x)))
+                else:
+                    parts.append(str(x))
+            return ", ".join(parts)
+        return str(value)
+
+    def _pretty_key(key: str) -> str:
+        # Преобразуем snake_case → Title Case
+        return " ".join(word.capitalize() for word in key.split("_"))
+
+    filtered = {k: v for k, v in data.items() if k not in EXCLUDE_KEYS}
+
+    ordered_keys = [k for k in FIELD_ORDER if k in filtered]
+    tail_keys = [k for k in filtered.keys() if k not in ordered_keys]
+    keys = ordered_keys + tail_keys
+
+    lines: List[str] = []
+    for key in keys:
+        raw_val = filtered[key]
+        pretty_val = _format_value(raw_val)
+
+        key_html = escape(_pretty_key(key))
+        val_html = escape(str(pretty_val))
+
+        if key in BOLD_FIELDS:
+            val_html = f"<b>{val_html}</b>"
+
+        mark = COLOR_MARKS.get(key, DEFAULT_MARK)
+        lines.append(f"<b>{key_html}:</b> {mark} {val_html}")
+
+    return "\n".join(lines)
+

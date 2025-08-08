@@ -10,6 +10,8 @@ class Trade(BaseModel):
     opt_entrypx: float
     fut_closepx: float
     opt_closepx: float
+    opt_profit: float
+    fut_profit: float
     profit: float
     target_perc: float
     take_profit_perc: float
@@ -50,6 +52,8 @@ async def save_trade(stage, last_px, type_close):
         # Расчёт прибыли
         profit = ((last_px - fut_entrypx) * qty) + ((opt_closepx - opt_entrypx) * cont)
 
+        fut_profit = (last_px - fut_entrypx) * qty
+        opt_profit = (opt_closepx - opt_entrypx) * cont
         # Закрытие и время
         t_close = type_close
         time_close = str(datetime.now())
@@ -72,6 +76,8 @@ async def save_trade(stage, last_px, type_close):
             opt_entrypx=opt_entrypx,
             fut_closepx=fut_closepx,
             opt_closepx=opt_closepx,
+            fut_profit = fut_profit,
+            opt_profit = opt_profit,
             profit=profit,
             target_perc=targ_perc,
             take_profit_perc=take_prof_perc,

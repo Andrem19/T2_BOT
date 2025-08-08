@@ -13,7 +13,7 @@ _MAX_ASK_OVER_MARK_MULT = 5.0
 _POLL_INTERVAL          = 5.00
 _DEDLINE = 50
 
-def tp_id(tp_order) -> str | None:
+def _tp_id(tp_order) -> str | None:
     ord_ = tp_order
     if isinstance(ord_, dict):
         r = ord_.get("result") or {}
@@ -141,7 +141,6 @@ async def open_opt(position: dict, which_pos_we_need: str):
                     pos_data = pos[0]
                     break
             await asyncio.sleep(_POLL_INTERVAL)
-        
         if not filled:
             try:
                 BB.Trading.cancel_order(account_idx=acc, symbol=symbol, order_id=entry_oid, order_link_id=entry_olid)
@@ -177,7 +176,7 @@ async def open_opt(position: dict, which_pos_we_need: str):
             logger.exception("Open_opt: place TP error %s", symbol)
             await safe_send("TELEGRAM_API", f'OPEN_OPT: The option is open but TAKE PROFIT fall\n\n{exc}\n\n{traceback.format_exc()}', '', False)
         
-        tp_id = tp_id(tp_order) if tp_order else None
+        tp_id = _tp_id(tp_order) if tp_order else None
         sv.stages[which_pos_we_need]['position']['leg'] = {
             'deliveryTime': snapshot['deliveryTime'],
             'hours_to_exp': ts.time_to_expiry(snapshot['deliveryTime']),
