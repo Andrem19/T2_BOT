@@ -21,7 +21,7 @@ import services.refresh_opt_info as refresh_opt
 import services.serv as serv
 import helpers.tools as ts
 import simulation.load_data as load_data
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 async def main():
@@ -94,7 +94,7 @@ async def main():
             
             #===========OPEN POSITION==============
             
-            if which_pos_we_need != 'nothing' and datetime.now().hour not in [4,5,6,7]:
+            if which_pos_we_need != 'nothing' and datetime.now(timezone.utc).hour not in [4,5,6,7]:
                 
                 best_simulation = sv.stages['simulation']['position_1']
                 

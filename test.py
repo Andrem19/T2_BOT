@@ -5,6 +5,7 @@ from exchanges.bybit_option_hub import BybitOptionHub as BB
 from exchanges.deribit_option_hub import DeribitOptionHub as DB
 import shared_vars as sv
 from datetime import datetime
+from exchanges.hyperliquid_api import HL
 from heapq import nsmallest
 from simulation.load_data import load_candles
 from simulation.simulation import simulation
@@ -38,14 +39,15 @@ perc_tp = [0.02, 0.025, 0.03, 0.04]
 
 
 async def main():
-    
-    test_dict = {
-        'strike_perc': 0.01,
-        'pnl': 0.44,
-        'upper_perc': 0.05
-    }
-    msg = serv.format_option_message_html(test_dict)
-    await tlg.send_option_message('COLLECTOR_API', msg, '', False)
+    HL.open_market_order('ETHUSDT', 'Buy', 0, False, 0.01, 2)
+    # print(datetime.now().hour )
+    # test_dict = {
+    #     'strike_perc': 0.01,
+    #     'pnl': 0.44,
+    #     'upper_perc': 0.05
+    # }
+    # msg = serv.format_option_message_html(test_dict)
+    # await tlg.send_option_message('COLLECTOR_API', msg, '', False)
     # data_eth = load_candles(path=sv.data_path_eth, start_date=START_DATE, end_date=END_DATE)
     # BB.initialise(testnet=False)
     # chain = BB.Chain.get_chain_full(underlying='ETH', days=2, with_greeks=False)

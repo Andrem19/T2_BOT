@@ -34,6 +34,19 @@ async def open_futures(position: dict, which_pos_we_need: str):
                 break
             await asyncio.sleep(4)
         
+        #==============SECOND TRY================
+        if not new_position:
+            HL.cancel_all_orders()
+            await asyncio.sleep(10)
+            new_position = HL.get_position(symbol, acc)
+            if not new_position:
+                HL.open_market_order(symbol, side, 0, False, fut_amt, acc)
+                for _ in range(3):
+                    new_position = HL.get_position(symbol, acc)
+                    if new_position:
+                        break
+                    await asyncio.sleep(4)
+        
         if new_position and new_position.get('size', 0) > 0:
             logger.info(f"Futures position {symbol} - {fut_amt} opened.")
             sv.stages[which_pos_we_need]['exist'] = True
@@ -59,11 +72,12 @@ async def open_futures(position: dict, which_pos_we_need: str):
 
             return True
         else:
-            await safe_send("TELEGRAM_API", f'OPEN_FUT: The option is open but FUTURES fall. WARNING: Options remain standalone!!!', '', False)
+            #ALARM
+            await safe_send("TELEGRAM_API", f'OPEN_FUT: The option is open but FUTURES fall. WARNING: Options remain standalone!!!\n\nNEED to {side} qty: {fut_amt}', '', False)
             await asyncio.sleep(1)
-            await safe_send("TELEGRAM_API", f'OPEN_FUT: The option is open but FUTURES fall. WARNING: Options remain standalone!!!', '', False)
+            await safe_send("TELEGRAM_API", f'OPEN_FUT: The option is open but FUTURES fall. WARNING: Options remain standalone!!!\n\nNEED to {side} qty: {fut_amt}', '', False)
             await asyncio.sleep(1)
-            await safe_send("TELEGRAM_API", f'OPEN_FUT: The option is open but FUTURES fall. WARNING: Options remain standalone!!!', '', False)
+            await safe_send("TELEGRAM_API", f'OPEN_FUT: The option is open but FUTURES fall. WARNING: Options remain standalone!!!\n\nNEED to {side} qty: {fut_amt}', '', False)
             return False
     except Exception as e:
         logger.exception(f'OPEN FUTURES ERROR: {e}\n\n{traceback.format_exc()}')

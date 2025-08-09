@@ -1,11 +1,13 @@
 import shared_vars as sv
 from shared_vars import logger
-from datetime import datetime
+from datetime import datetime, timezone
 from exchanges.bybit_option_hub import BybitOptionHub as BB
 from helpers.price_feed import PriceCache, CandleCache
 import services.serv as serv
 import helpers.tools as tools
+from typing import Optional, Dict, Any
 from simulation.simulation import simulation
+from database.simulation import Simulation
 import traceback
 import copy
 import copy
@@ -71,7 +73,11 @@ async def search(which_pos_we_need: str):
             left_to_exp = tools.time_to_expiry(filtered_chain_0[0]['deliveryTime'])
             sv.stages['simulation']['time_to_exp'] = left_to_exp
             
-            distance = 0.014 if left_to_exp < 10 else 0.018 if left_to_exp < 15 or which_pos_we_need == 'second' else 0.024
+            avg = Simulation.avg_for_current_period_last_days(4)
+            sv.stages['simulation']['period_avg_pnl'] = avg['pnl']
+            sv.stages['simulation']['period_avg_dist'] = avg['dist']
+            print(avg)
+            distance = 0.012 if left_to_exp < 10 else 0.016 if left_to_exp < 15 or which_pos_we_need == 'second' else 0.022
             filtered_chain_0 = tools.filter_options_by_distance(filtered_chain_0, distance)
             
             amount_for_est = 1 if which_pos_we_need =='nothing' else sv.stages[which_pos_we_need]['amount']*v['kof']
@@ -155,14 +161,80 @@ async def search(which_pos_we_need: str):
                                 best_position['pnl'] = pnl
                                 print(mode, pnl)
                                 define_sim_pos(copy.deepcopy(best_position))
+                                
                     
                 except Exception as e:
                     logger.exception(f'SEARCH INNER LOOP ERROR: {e}\n\n{traceback.format_exc()}')
+        await read_and_update_current_utc_hour(sv.stages['simulation']['position_1'])
         speed_sec = (datetime.now().timestamp() - start)
         logger.info(f'speed: {speed_sec}')
     except Exception as e:
         logger.exception(f'SEARCH ERROR: {e}\n\n{traceback.format_exc()}')
-                        
-        
-        
-        
+
+
+async def read_and_update_current_utc_hour(new_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Держим "лучшее" значение в пределах текущего UTC-часа по метрике `pnl` (максимум).
+    Поведение:
+      - Если записи за день нет — создаётся.
+      - Если за текущий час значение отсутствует — пишем new_payload.
+      - Если есть — сравниваем old['pnl'] и new['pnl']; сохраняем только если new лучше (больше).
+      - Возвращаем предыдущее значение (dict) или None, если его не было.
+
+    Важно:
+      - Работает в UTC (дата и час берутся из datetime.now(timezone.utc)).
+      - Значения хранятся как JSON-строка; чтение возвращает dict благодаря обвязке Simulation.
+    """
+    try:
+        new_payload = {
+            'pnl': new_payload['pnl'],
+            'dist': round(new_payload['strike_perc'], 4)
+        }
+        # 1) UTC-дата и час
+        now_utc = datetime.now(timezone.utc)
+        hour = now_utc.hour  # 0..23
+
+        # 2) Гарантируем суточную запись
+        sim = Simulation.get_or_create_for_date(now_utc)
+
+        # 3) Текущее значение за час (dict | None)
+        old_value = sim.get_hour(hour)
+
+        # 4) Валидация входа: должен быть dict c числовым new_pnl
+        if not isinstance(new_payload, dict):
+            sv.logger.warning("read_and_update_current_utc_hour: new_payload is not a dict -> ignored")
+            return old_value
+
+        new_pnl_raw = new_payload.get("pnl", None)
+        try:
+            new_pnl = float(new_pnl_raw) if new_pnl_raw is not None else None
+        except (TypeError, ValueError):
+            new_pnl = None
+
+        if new_pnl is None:
+            sv.logger.warning("read_and_update_current_utc_hour: new_payload['pnl'] is missing or non-numeric -> ignored")
+            return old_value
+
+        # 5) Если старого нет — пишем новое
+        if old_value is None:
+            sim.set_hour(hour, new_payload)   # автосериализация dict -> JSON
+            return None  # предыдущее отсутствовало
+
+        # 6) Если старое есть — сравниваем pnl
+        old_pnl_raw = old_value.get("pnl", None)
+        try:
+            old_pnl = float(old_pnl_raw) if old_pnl_raw is not None else None
+        except (TypeError, ValueError):
+            old_pnl = None
+
+        # Если старый pnl невалидный — считаем, что новое лучше по определению
+        if old_pnl is None or new_pnl > old_pnl:
+            sim.set_hour(hour, new_payload)   # перезапись на лучшее
+            return old_value  # возвращаем прежнее значение (до улучшения)
+
+        # 7) Иначе новое не лучше — ничего не меняем
+        return old_value
+
+    except Exception as e:
+        sv.logger.exception(f"ERROR: (read_and_update_current_utc_hour) {e}\n\n{traceback.format_exc()}")
+        return None

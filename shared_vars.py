@@ -38,6 +38,8 @@ END_DATE    = "01-01-2025"
 
 stages = {
     'simulation': {
+        'period_avg_pnl': 0.30,
+        'period_avg_dist': 0.01,
         'time_to_exp': 10,
         'atr': [0, 0],
         'rsi': 0,

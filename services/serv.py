@@ -170,8 +170,7 @@ def get_state_dict(stages):
         'stages': stages,
     }
         
-from html import escape
-from typing import Any, Dict, List
+
 
 def format_option_message_html(data: Dict[str, Any]) -> str:
     """
@@ -179,7 +178,7 @@ def format_option_message_html(data: Dict[str, Any]) -> str:
     Исключает: name, pnl_upper, qty, type.
     Преобразует ключи в человекочитаемый вид (Strike Perc вместо strike_perc).
     Жирным: 'pnl', 'strike_perc'.
-    Визуальная "раскраска" полей через цветные эмодзи.
+    Визуальная "раскраска" полей через цветные эмодзи, маркер стоит перед ключом.
     """
     EXCLUDE_KEYS = {"name", "pnl_upper", "qty", "type"}
     BOLD_FIELDS = {"pnl", "strike_perc"}
@@ -235,15 +234,17 @@ def format_option_message_html(data: Dict[str, Any]) -> str:
         return str(value)
 
     def _pretty_key(key: str) -> str:
-        # Преобразуем snake_case → Title Case
         return " ".join(word.capitalize() for word in key.split("_"))
 
+    # Фильтрация
     filtered = {k: v for k, v in data.items() if k not in EXCLUDE_KEYS}
 
+    # Упорядочиваем
     ordered_keys = [k for k in FIELD_ORDER if k in filtered]
     tail_keys = [k for k in filtered.keys() if k not in ordered_keys]
     keys = ordered_keys + tail_keys
 
+    # Формируем строки
     lines: List[str] = []
     for key in keys:
         raw_val = filtered[key]
@@ -256,7 +257,9 @@ def format_option_message_html(data: Dict[str, Any]) -> str:
             val_html = f"<b>{val_html}</b>"
 
         mark = COLOR_MARKS.get(key, DEFAULT_MARK)
-        lines.append(f"<b>{key_html}:</b> {mark} {val_html}")
+        # Теперь маркер в начале строки
+        lines.append(f"{mark} <b>{key_html}:</b> {val_html}")
 
     return "\n".join(lines)
+
 
