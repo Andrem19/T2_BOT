@@ -11,7 +11,7 @@ async def process_position(last_px: float, pos_name: str):
         close_command = sv.close_1 if pos_name == 'first' else sv.close_2
         if close_command:
             await close.close_position_fully(pos_name=pos_name, reason='close_command', last_px=last_px)
-            return
+            return True
         
         #========PNL TARGET=========
         pnl_target = sv.stages[pos_name]['position']['pnl_target']
@@ -19,7 +19,7 @@ async def process_position(last_px: float, pos_name: str):
         if pnl_target > 0 and tot_pnl >= pnl_target:
             flag = '_fut' if sv.stages[pos_name]['position']['position_info'].get('unrealizedPnl', 0) > 0 and sv.stages[pos_name]['position']['leg']['info'].get('unrealisedPnl', 0) < 0 else '_opt'
             await close.close_position_fully(pos_name=pos_name, reason=f'pnl_hit{flag}', last_px=last_px)
-            return
+            return True
 
 
         #=========ELSE=============
@@ -59,7 +59,8 @@ async def process_position(last_px: float, pos_name: str):
                 pos_name, reason, last_px, entry_px, up_lvl, lv_lvl, fut_size,
             )
             await close.close_position_fully(pos_name=pos_name, reason=reason, last_px=last_px)
-            return
+            return True
+        return False
     except Exception as e:
         await safe_send("TELEGRAM_API", f'PROCCESS POSITION ERROR: {e}\n\n{traceback.format_exc()}', '', False)
         logger.error(f'{e}')

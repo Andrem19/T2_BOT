@@ -105,7 +105,8 @@ async def main():
                         fut_is_open = await open_fut.open_futures(best_simulation, which_pos_we_need)
                         if fut_is_open:
                             serv.save_stages(sv.stages)
-                            await tlg.send_option_message('COLLECTOR_API', f"✅✅✅\nPosition was opened SUCCESSFULY!!!\n\n{serv.format_option_message_html(sv.stages['simulation']['position_1'])}", '', False)
+                            _, msg_bal = await serv.get_balances()
+                            await tlg.send_option_message('COLLECTOR_API', f"✅✅✅\nBalances: {msg_bal}\nPosition was opened SUCCESSFULY!!!\n\n{serv.format_option_message_html(sv.stages['simulation']['position_1'])}", '', False)
 
             #===========MONITORING=================
             
@@ -119,11 +120,11 @@ async def main():
             
             if sv.stages['second']['exist']:
                 last_pr = PriceCache.get(sv.stages['second']['base_coin'] + 'USDT')
-                await monitoring.process_position(last_pr, 'second')
+                _ = await monitoring.process_position(last_pr, 'second')
                 
             if sv.stages['first']['exist']:
                 last_pr = PriceCache.get(sv.stages['first']['base_coin'] + 'USDT')
-                await monitoring.process_position(last_pr, 'first')
+                _ = await monitoring.process_position(last_pr, 'first')
 
             if sv.stages['second']['exist'] or sv.stages['first']['exist']:
                 ensure_option_feed_alive()

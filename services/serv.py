@@ -9,6 +9,9 @@ import numpy as np
 from html import escape
 from typing import Any, Dict, List
 from datetime import datetime, timedelta, timezone
+from exchanges.hyperliquid_api import HL
+from exchanges.bybit_option_hub import BybitOptionHub as BB
+import asyncio
 
 TEMP_FILE_PATH = "params_temp.json"
 
@@ -263,3 +266,30 @@ def format_option_message_html(data: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+async def get_balances():
+    try:
+        hl_bal_1 = HL.get_balance(account_idx=1)
+        await asyncio.sleep(1)
+        hl_bal_2 = HL.get_balance(account_idx=2)
+        bybit_bal_1_raw = BB.Trading.get_wallet_balance(account_idx=1)
+        bybit_bal_1 = float(bybit_bal_1_raw['result']['list'][0]['totalEquity'])
+        await asyncio.sleep(1)
+        bybit_bal_2_raw = BB.Trading.get_wallet_balance(account_idx=2)
+        bybit_bal_2 = float(bybit_bal_2_raw['result']['list'][0]['totalEquity'])
+        
+        total = hl_bal_1+hl_bal_2+bybit_bal_1+bybit_bal_2
+        bal = {
+            "HL": {
+                "1": hl_bal_1,
+                "2": hl_bal_2
+            },
+            "BB": {
+                "1": bybit_bal_1,
+                "2": bybit_bal_2
+            },
+            "total": total
+        }
+        msg = f"hl_bal_1: {hl_bal_1}\nhl_bal_2: {hl_bal_2}\nbybit_bal_1: {bybit_bal_1}\nbybit_bal_2: {bybit_bal_2}\n\nTOTAL: {total}"
+        return bal, msg
+    except Exception as e:
+        logger.exception(f'ERROR: (serv.get_balances) {e}')

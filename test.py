@@ -4,14 +4,18 @@ import sys
 from exchanges.bybit_option_hub import BybitOptionHub as BB
 from exchanges.deribit_option_hub import DeribitOptionHub as DB
 import shared_vars as sv
-from datetime import datetime
+from datetime import datetime, timezone
 from exchanges.hyperliquid_api import HL
 from heapq import nsmallest
 from simulation.load_data import load_candles
 from simulation.simulation import simulation
 from helpers.safe_sender import safe_send
+from database.simple_orm import initialize
 import services.serv as serv
 import helpers.tlg as tlg
+from database.hist_trades import Trade
+from database.simulation import Simulation
+from commander.service import format_trades_report
 
 
 START_DATE  = "01-01-2024"
@@ -39,7 +43,18 @@ perc_tp = [0.02, 0.025, 0.03, 0.04]
 
 
 async def main():
-    HL.open_market_order('ETHUSDT', 'Buy', 0, False, 0.01, 2)
+    h = datetime.now(timezone.utc).hour
+    print(h)
+    BB.initialise(testnet=False)
+    bybit_bal_1 = BB.Trading.get_wallet_balance(account_idx=2)
+    print(bybit_bal_1['result']['list'][0]['totalEquity'])
+    # initialize("tbot.db")
+    # hist = Trade.last_n_days(2)
+    # hist_dicts = [vars(obj) for obj in hist]
+    # result = format_trades_report(hist_dicts)
+    # today_dict = Simulation.full_day_dict_by_offset(0)
+    # pretty_str = tools.dict_to_pretty_string(today_dict)
+    # print(pretty_str)
     # print(datetime.now().hour )
     # test_dict = {
     #     'strike_perc': 0.01,

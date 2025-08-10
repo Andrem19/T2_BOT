@@ -216,7 +216,7 @@ def get_next_friday_day(days: int = 4) -> Tuple[str, int]:
           – если до пятницы осталось меньше 4 дней — берётся пятница через неделю;
           – иначе — ближайшая пятница текущей недели.
     """
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
 
     if days == 0:
         target = today

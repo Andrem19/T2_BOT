@@ -56,10 +56,11 @@ async def search(which_pos_we_need: str):
             
             chain = BB.Chain.get_chain_full(underlying=k, days=2, with_greeks=False) or []
             
-            h = datetime.now().hour
+            h = datetime.now(timezone.utc).hour
+            
             day_opt = 0 if h >= 0 and h < 8 else 1
             opt_day_1, _ = tools.get_next_friday_day(day_opt)
-            
+
             
             filtered_chain_0 = []
             if 'call' in sv.opt_types:
@@ -77,7 +78,7 @@ async def search(which_pos_we_need: str):
             sv.stages['simulation']['period_avg_pnl'] = avg['pnl']
             sv.stages['simulation']['period_avg_dist'] = avg['dist']
             print(avg)
-            distance = 0.012 if left_to_exp < 10 else 0.016 if left_to_exp < 15 or which_pos_we_need == 'second' else 0.022
+            distance = 0.013 if left_to_exp < 10 else 0.016 if left_to_exp < 15 or which_pos_we_need == 'second' else 0.022
             filtered_chain_0 = tools.filter_options_by_distance(filtered_chain_0, distance)
             
             amount_for_est = 1 if which_pos_we_need =='nothing' else sv.stages[which_pos_we_need]['amount']*v['kof']
@@ -140,8 +141,6 @@ async def search(which_pos_we_need: str):
                             opt_qty['ask'] = ask*v['kof']
                             opt_qty['p_t'] = p_t
                             
-                            
-
                             stat, pnl, n = simulation(v['data'], opt_qty, params)
                             if pnl > best_position['pnl']:
                                 best_position['type'] = mode

@@ -17,16 +17,14 @@ from decouple import config
 
 from database.commands_tab import Commands
 import helpers.tools as tools
-import helpers.tlg as tel  # в проекте уже есть враппер
+import helpers.tlg as tel
 from aiohttp import web
 import commander.process_utils as proc
 from database.hist_trades import Trade
+from database.simulation import Simulation
+import services.serv as serv
 from helpers.statistics import compute_trade_stats, visualize_trade_stats
-import httpx
-from packaging import version as _pver
-
-import copy
-import os
+from commander.service import format_trades_report
 
 
 # ---------------------------------------------------------------------------
@@ -61,8 +59,6 @@ async def types(type_P_C: str, flag_0_1: str):
         print(e)
     
     
-    
-    
 async def expect(val: str, pos) -> None:
     try:
         p=int(pos)
@@ -94,6 +90,23 @@ async def symb(symb: str, flag_0_1: str) -> None:
     await off()
     await asyncio.sleep(8)
     await start()
+    
+async def trade_hist(days: str):
+    try:
+        hist = Trade.last_n_days(int(days))
+        hist_dicts = [vars(obj) for obj in hist]
+        report = format_trades_report(hist_dicts)
+        await tel.send_inform_message("COLLECTOR_API", f"{report}", "", False)
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
+
+async def sim_hist(day: str):
+    try:
+        today_dict = Simulation.full_day_dict_by_offset(int(day))
+        pretty_str = tools.dict_to_pretty_string(today_dict)
+        await tel.send_inform_message("COLLECTOR_API", f"{pretty_str}", "", False)
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
 
 async def close(pos) -> None:
     p=int(pos)
@@ -113,7 +126,7 @@ async def open(pos) -> None:
 
 async def stat(days: str):
     try:
-        hist = Trade.all()
+        hist = Trade.last_n_days(int(days))
         hist_dicts = [vars(obj) for obj in hist]  # включая id
         stat = compute_trade_stats(hist_dicts, int(days), True)
         paths = visualize_trade_stats(hist_dicts, stat, out_dir="_charts")
@@ -125,7 +138,7 @@ async def stat(days: str):
 
 async def stattext(days: str):
     try:
-        hist = Trade.all()
+        hist = Trade.last_n_days(int(days))
         hist_dicts = [vars(obj) for obj in hist]  # включая id
         stat = compute_trade_stats(hist_dicts, int(days), False)
         await tel.send_inform_message("COLLECTOR_API", f'{tools.dict_to_pretty_string(stat)}', '', False)
@@ -138,6 +151,14 @@ async def timer(sec: str):
         await tel.send_inform_message("COLLECTOR_API", f"New timer value: {sec}", "", False)
     except Exception as e:
         print(e)
+        
+async def balances():
+    try:
+        _, msg = await serv.get_balances()
+        await tel.send_inform_message("COLLECTOR_API", f"{msg}", "", False)
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
+    
 
 async def get_pids():
     com = Commands.get_instance()
@@ -148,6 +169,8 @@ async def start():
     try:
         proc_pid = proc.start_main()
         Commands.set_proc_id(proc_pid)
+        if proc_pid:
+            await tel.send_inform_message("COLLECTOR_API", f'Process main.py started successfuly. PID: {proc_pid}', "", False)
     except Exception as e:
         await tel.send_inform_message("COLLECTOR_API", f'{e}', "", False)
         
@@ -182,6 +205,9 @@ def init_commander():
     sv.commander.add_command(["pids"], get_pids)
     sv.commander.add_command(["com"], commands_db)
     sv.commander.add_command(["types"], types)
+    sv.commander.add_command(["hist"], trade_hist)
+    sv.commander.add_command(["bal"], balances)
+    sv.commander.add_command(["simhist"], sim_hist)
     sv.commander.add_command(["simulation"], simulation)
     sv.commander.add_command(["symb"], symb)
     sv.commander.add_command(["stat"], stat)

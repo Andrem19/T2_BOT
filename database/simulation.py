@@ -143,6 +143,25 @@ class Simulation(BaseModel):
             hours[i] = self._from_storage(raw)
         return {"datetime": self.datetime, "hours": hours}
 
+    @classmethod
+    def full_day_dict_by_offset(cls, offset_days: int) -> Dict[str, Any]:
+        """
+        Вернуть полную запись-день (все 24 часа) как dict для UTC-даты:
+          offset_days=0 -> сегодня (UTC),
+          1 -> вчера (UTC),
+          2 -> позавчера (UTC), и т.д.
+
+        Если записи ещё нет — создаётся пустая запись и возвращается
+        предсказуемая структура.
+        """
+        if offset_days < 0:
+            raise ValueError("offset_days must be >= 0")
+
+        today_utc = dt.datetime.now(dt.timezone.utc).date()
+        target_day = today_utc - dt.timedelta(days=offset_days)
+        sim = cls.get_or_create_for_date(target_day)
+        return sim.as_parsed_dict()
+
     # --------- АГРЕГАЦИЯ ДЛЯ ТЕКУЩЕГО UTC-ПЕРИОДА ---------
 
     @classmethod
@@ -173,6 +192,7 @@ class Simulation(BaseModel):
 
         sims = cls.last_days(days, until=now_utc)
 
+        from typing import Tuple  # локальный импорт для ясности типов
         day_avgs: List[Tuple[float, float]] = []
         for sim in sims:
             sum_pnl = 0.0

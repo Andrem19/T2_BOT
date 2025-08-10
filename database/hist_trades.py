@@ -1,5 +1,6 @@
 from database.simple_orm import BaseModel
-from datetime import datetime
+from typing import Any, Dict, Optional, List
+from datetime import datetime, timezone, timedelta
 import shared_vars as sv
 
 class Trade(BaseModel):
@@ -24,8 +25,58 @@ class Trade(BaseModel):
     rel_atr: float = 0.08
     rsi: float = 55.4
 
+    @classmethod
+    def last_n_days(
+        cls,
+        n: int,
+        *,
+        include_today: bool = True,
+        now_utc: Optional[datetime] = None,
+    ) -> List["Trade"]:
+        """
+        Вернуть все записи за последние n календарных дней по UTC, фильтрация по time_open.
 
-from datetime import datetime
+        Интервал:
+          - include_today=True (по умолчанию): [UTC 00:00 (today-(n-1)); now_utc]
+          - include_today=False:                [UTC 00:00 (today-n); UTC 00:00 today)
+
+        Требования к формату поля time_open в БД:
+          'YYYY-MM-DD HH:MM:SS.ffffff+00:00'  (лексикографическое сравнение корректно для UTC)
+
+        ПРИМЕЧАНИЕ: создаётся индекс по time_open, если его ещё нет.
+        """
+        if n <= 0:
+            return []
+
+        cls._ensure_idx_time_open()
+
+        now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if include_today:
+            start_date = now.date() - timedelta(days=n - 1)
+        else:
+            start_date = now.date() - timedelta(days=n)
+
+        start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+        start_str = start_dt.isoformat(sep=" ", timespec="microseconds")  # 'YYYY-MM-DD HH:MM:SS.ffffff+00:00'
+
+        sql = f"""
+            SELECT * FROM {cls._tbl_name()}
+            WHERE time_open >= ?
+            ORDER BY time_open ASC, id ASC
+        """
+        cur = cls._conn.execute(sql, (start_str,))
+        rows = cur.fetchall()
+        return [cls._row_to_obj(r) for r in rows]
+
+    # --------------------- ВНУТРЕННИЕ ХЕЛПЕРЫ ---------------------
+
+    @classmethod
+    def _ensure_idx_time_open(cls) -> None:
+        """Нефункциональный индекс по time_open для ускорения диапазонных запросов."""
+        cls._conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{cls._tbl_name()}_time_open ON {cls._tbl_name()}(time_open)"
+        )
+        cls._conn.commit()
 
 async def save_trade(stage, last_px, type_close):
     try:

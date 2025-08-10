@@ -6,36 +6,6 @@ commander: Commander = None
 START_DATE  = "01-01-2024"
 END_DATE    = "01-01-2025"
 
-
-# === Best Option Strategy ===
-# P&L: 0.01
-# ATR: [33.35, 0.009208]
-# RSI: 46.67
-# Symbol: ETH-6AUG25-3550-P-USDT
-# Last px: 3622.23 (0.0203)
-# Total Trades: 622
-# Time to Expiry: 17.897982738055557
-# Ask Indicator: (60.96, 2.08)
-
-# Future Calculation:
-#   qty: 0.0246
-#   pnl_upper: 1.9367
-#   pnl_lower: 0.4842
-#   up_share: 0.8
-#   feasible_min: 0.0068
-#   feasible_max: 0.0268
-#   clipped: False
-#   ask: 0.735
-#   ask_original: 14.7
-#   p_t: 0.04
-
-# Max amount we can take: 14.6
-# Target Bid: 129.75
-# Lower Target: 3408.0 (-0.0592%)
-# Upper Target: 3730.95 (+0.03%)
-# Position we need: first
-# Speed sec: 13.41
-
 stages = {
     'simulation': {
         'period_avg_pnl': 0.30,
@@ -186,8 +156,6 @@ bids_btc = {
     0.025: 2700,
     0.045: 4700
 }
-
-
 
 perc_t = [0.025, 0.03, 0.04]
 perc_tp = [0.02, 0.025, 0.03]
