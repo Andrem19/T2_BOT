@@ -78,14 +78,6 @@ async def main():
             
             await serv.refresh_commands_from_bd()
             
-            #========REFRESH POSITION INFO=========
-            
-            await refresh_fut.refresh_fut(counter)
-            
-            #========REFRESH OPTIONS INFO==========
-            
-            await refresh_opt.refresh_opt(counter)
-            
             #===========CALCULATION================
             
             which_pos_we_need = open_opt.get_required_position()
@@ -108,15 +100,15 @@ async def main():
                             _, msg_bal = await serv.get_balances()
                             await tlg.send_option_message('COLLECTOR_API', f"✅✅✅\nBalances: {msg_bal}\nPosition was opened SUCCESSFULY!!!\n\n{serv.format_option_message_html(sv.stages['simulation']['position_1'])}", '', False)
 
+            #========REFRESH POSITION INFO=========
+            
+            await refresh_fut.refresh_fut(counter)
+            
+            #========REFRESH OPTIONS INFO==========
+            
+            await refresh_opt.refresh_opt(counter)
+            
             #===========MONITORING=================
-            
-            try:
-                fb_dict = serv.get_state_dict(sv.stages)
-                fw.write(fb_dict)
-            except Exception as e:
-                logger.exception(f'ERROR when saving stages in realtime database: {e}')
-            
-            ensure_streams_alive_for_symbols(symbs, max_stale_seconds=30)
             
             if sv.stages['second']['exist']:
                 last_pr = PriceCache.get(sv.stages['second']['base_coin'] + 'USDT')
@@ -128,12 +120,20 @@ async def main():
 
             if sv.stages['second']['exist'] or sv.stages['first']['exist']:
                 ensure_option_feed_alive()
+            ensure_streams_alive_for_symbols(symbs, max_stale_seconds=30)
+            
+            try:
+                fb_dict = serv.get_state_dict(sv.stages)
+                fw.write(fb_dict)
+            except Exception as e:
+                logger.exception(f'ERROR when saving stages in realtime database: {e}')
             
             #======================================
             time_now = datetime.now().timestamp()
             if rare_timer+3600<time_now:
                 update_leg_subscriptions(sv.stages)
                 rare_timer = time_now
+                
             counter+=1
             await asyncio.sleep(5)
             

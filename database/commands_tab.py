@@ -13,6 +13,7 @@ class Commands(BaseModel):
     process_id: int = 0
     man_pid: int = 0
     simulation: bool = True
+    fut_perc: float = 0.8
     call: bool = False
     put: bool = True
     btc: bool = False
@@ -111,7 +112,12 @@ class Commands(BaseModel):
         inst.save()
         return inst
     
-    
+    @classmethod
+    def set_fut_perc(cls, value: float):
+        inst = cls.get_instance()
+        inst.fut_perc = value
+        inst.save()
+        return inst 
     
     @classmethod
     def set_expect_1(cls, value: float):

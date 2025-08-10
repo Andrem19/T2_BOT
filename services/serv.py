@@ -68,6 +68,7 @@ async def refresh_commands_from_bd():
         sv.stages['second']['amount'] = com.amount_2
         sv.stages['first']['expect'] = com.expect_1
         sv.stages['second']['expect'] = com.expect_2
+        sv.stages['simulation']['fut_perc'] = com.fut_perc
         sv.timer_msg = com.timer
         sv.close_1 = com.close_1
         sv.close_2 = com.close_2
@@ -267,15 +268,13 @@ def format_option_message_html(data: Dict[str, Any]) -> str:
 
 
 async def get_balances():
-    try:
+    try:      
         hl_bal_1 = HL.get_balance(account_idx=1)
         await asyncio.sleep(1)
         hl_bal_2 = HL.get_balance(account_idx=2)
-        bybit_bal_1_raw = BB.Trading.get_wallet_balance(account_idx=1)
-        bybit_bal_1 = float(bybit_bal_1_raw['result']['list'][0]['totalEquity'])
+        bybit_bal_1 = BB.Trading.get_total_equity(account_idx=1)
         await asyncio.sleep(1)
-        bybit_bal_2_raw = BB.Trading.get_wallet_balance(account_idx=2)
-        bybit_bal_2 = float(bybit_bal_2_raw['result']['list'][0]['totalEquity'])
+        bybit_bal_2 = BB.Trading.get_total_equity(account_idx=2)
         
         total = hl_bal_1+hl_bal_2+bybit_bal_1+bybit_bal_2
         bal = {
