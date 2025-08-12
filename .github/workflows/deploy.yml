@@ -1,0 +1,52 @@
+name: Deploy to Lightsail via git fetch/reset (no restart)
+
+on:
+  push:
+    branches: [ "main" ]  # при необходимости замените на вашу ветку
+
+env:
+  BRANCH: ${{ secrets.DEPLOY_BRANCH }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Prepare SSH to server
+        shell: bash
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Update code on server (tracked files only; no restart)
+        shell: bash
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "set -euo pipefail
+             cd '${{ secrets.DEPLOY_PATH }}'
+
+             # Убедимся, что origin использует SSH (а не https), иначе приватный репо не вытянется
+             if git remote -v | grep -q '^origin.*https://github.com/'; then
+               git remote set-url origin \$(git remote get-url origin | sed 's#https://github.com/#git@github.com:#')
+             fi
+
+             # Ветка по умолчанию — из секрета DEPLOY_BRANCH, иначе 'main'
+             BRANCH=\"${BRANCH:-main}\"
+
+             # Тянем изменения и синхронизируем ТОЛЬКО tracked-файлы
+             git fetch origin \"${BRANCH}\"
+             git checkout -f \"${BRANCH}\"
+             git reset --hard \"origin/${BRANCH}\"
+
+             # ВАЖНО: никаких 'git clean' — чтобы не снести .env, *.db, _logs/ (untracked)
+            "
+
+      - name: Show last commit deployed (sanity)
+        shell: bash
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "cd '${{ secrets.DEPLOY_PATH }}' && git --no-pager log -1 --oneline"
