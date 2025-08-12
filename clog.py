@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# sudo systemctl restart t2-manager   # вручную, если нужно перезапустить
+# sudo systemctl stop t2-manager
+# sudo systemctl disable t2-manager
 import argparse
 import os
 import shutil

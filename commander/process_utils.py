@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import platform
+import sys
 import signal
 import subprocess
 from pathlib import Path
@@ -36,25 +37,29 @@ def start_main(
     append_log: bool = False,
 ) -> int:
     """
-    Запускает main.py БЕЗ аргументов. Возвращает PID процесса.
+    Запускает main.py БЕЗ аргументов тем же интерпретатором, что и manager.py
+    (sys.executable -> то же conda-окружение). Возвращает PID процесса.
 
     stdout_mode:
       - 'inherit' (по умолчанию): stdout/stderr наследуются от родителя.
-        Консольный хендлер logging.StreamHandler(sys.stdout) будет писать туда же,
-        где и родитель. Дубликатов файловых логов не будет.
       - 'devnull': весь stdout/stderr глушится.
-      - 'file': stdout/stderr пишутся в файл log_file. Это перехватит и print(),
-        и StreamHandler(sys.stdout). Ваш TimedRotatingFileHandler продолжит
-        писать в свой файл независимо.
+      - 'file': stdout/stderr пишутся в файл log_file (перехватывает print()
+        и StreamHandler(sys.stdout); ваши файловые хендлеры logging продолжают
+        писать в свои файлы независимо).
 
-    ВНИМАНИЕ: если у вас уже настроен файловый логгер, рекомендую 'inherit' или
-    'devnull', чтобы избежать дублей.
+    ВНИМАНИЕ: если у вас уже настроен файловый логгер, обычно используйте
+    'inherit' или 'devnull', чтобы избежать дублей.
     """
     project_root = Path(project_root).resolve()
     script_path = project_root / main_script
     if not script_path.exists():
         raise FileNotFoundError(f"Не найден скрипт: {script_path}")
 
+    # ВАЖНО: тот же интерпретатор, что у manager.py → то же conda-окружение
+    python_exe = sys.executable  # напр., /home/ubuntu/miniconda3/envs/env6/bin/python
+    cmd = [python_exe, "-u", str(script_path)]
+
+    # Настройка вывода
     stdout = None
     stderr = None
     log_fp = None
@@ -68,28 +73,24 @@ def start_main(
         log_path = Path(log_file).resolve()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         mode = "a" if append_log else "w"
-        log_fp = open(log_path, mode, buffering=1, encoding="utf-8")  # line-buffered
+        # Текстовый режим, line-buffered
+        log_fp = open(log_path, mode, buffering=1, encoding="utf-8")
         stdout = log_fp
         stderr = subprocess.STDOUT
     elif stdout_mode == "inherit":
-        # Ничего не задаём — потомок унаследует дескрипторы родителя.
         stdout = None
         stderr = None
     else:
         raise ValueError("stdout_mode must be 'inherit', 'devnull', or 'file'")
 
-    cmd = _python_command() + [str(script_path)]
-
-    creationflags = 0
-    preexec_fn = None
+    # Параметры отделения процесса от текущей группы (на *nix)
     system = platform.system()
-
+    start_new_session = system != "Windows"
+    creationflags = 0
     if system == "Windows":
         CREATE_NEW_PROCESS_GROUP = 0x00000200
         DETACHED_PROCESS = 0x00000008
         creationflags = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
-    else:
-        preexec_fn = os.setsid  # type: ignore[assignment]
 
     try:
         proc = subprocess.Popen(
@@ -97,15 +98,19 @@ def start_main(
             cwd=str(project_root),
             stdout=stdout,
             stderr=stderr,
-            text=True,
-            bufsize=1,
-            preexec_fn=preexec_fn,
+            text=True,         # влияет только на PIPE; для файла/наследования безвредно
+            bufsize=1,         # line-buffered для PIPE/текста
+            start_new_session=start_new_session,  # вместо preexec_fn=os.setsid
             creationflags=creationflags,
         )
         return proc.pid
     finally:
+        # Безопасно закрываем наш файловый объект: у дочернего процесса уже свой дескриптор
         if log_fp is not None:
-            log_fp.close()
+            try:
+                log_fp.close()
+            except Exception:
+                pass
 
 
 def is_process_alive(pid: int) -> bool:
