@@ -12,14 +12,82 @@ firebase_writer.py
   • включить Realtime Database и задать правила доступа
 """
 
-from typing import Any, Dict
-import time
+from __future__ import annotations
+
+from typing import Any, Dict, Mapping, Iterable
 import os
+import time
+import math
+from datetime import date, datetime
+from decimal import Decimal
 
 import backoff               # лёгкая библиотека для повторов (pip install backoff)
 import firebase_admin
 from firebase_admin import credentials, db
 from shared_vars import logger as _logger
+
+# numpy — опционально: если установлен, конвертируем его типы в примитивы
+try:
+    import numpy as _np
+    _HAS_NUMPY = True
+except Exception:
+    _HAS_NUMPY = False
+
+
+def _to_jsonable(obj: Any) -> Any:
+    """
+    Рекурсивно конвертирует произвольные объекты в JSON-совместимые структуры:
+      - Decimal -> float (если число конечное) иначе str
+      - float NaN/Inf -> None (Firebase/JSON не принимают)
+      - datetime/date -> ISO-строка
+      - numpy scalar -> базовый Python-тип
+      - numpy.ndarray -> list
+      - set/tuple -> list
+      - dict -> dict со строковыми ключами
+      - всё иное -> str как безопасный fallback
+    """
+    # Базовые примитивы
+    if obj is None or isinstance(obj, (bool, int, str)):
+        return obj
+
+    # float с нормализацией NaN/Inf
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+
+    # Decimal -> float/str
+    if isinstance(obj, Decimal):
+        try:
+            f = float(obj)
+            return f if math.isfinite(f) else str(obj)
+        except Exception:
+            return str(obj)
+
+    # Даты/время -> ISO
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+
+    # numpy-типы
+    if _HAS_NUMPY:
+        if isinstance(obj, _np.generic):  # np.int64/np.float32/np.bool_/np.str_ и т.п.
+            return _to_jsonable(obj.item())
+        if isinstance(obj, _np.ndarray):
+            return [_to_jsonable(x) for x in obj.tolist()]
+
+    # Словари/маппинги -> dict со строковыми ключами
+    if isinstance(obj, Mapping):
+        out: Dict[str, Any] = {}
+        for k, v in obj.items():
+            key = str(k)  # Firebase Realtime DB требует строковые ключи
+            out[key] = _to_jsonable(v)
+        return out
+
+    # Итерируемые (list/tuple/set/...) -> list
+    if isinstance(obj, Iterable) and not isinstance(obj, (bytes, bytearray)):
+        return [_to_jsonable(x) for x in obj]
+
+    # Запасной вариант — строка
+    return str(obj)
+
 
 class FirebaseWriter:
     """
@@ -86,17 +154,29 @@ class FirebaseWriter:
     def write(self, data: Dict[str, Any], *, merge: bool = False) -> None:
         """
         Записать словарь в узел.
-        merge=False (по-умолчанию) → ref.set(data)  — перезаписывает узел целиком.  
+        merge=False (по-умолчанию) → ref.set(data)  — перезаписывает узел целиком.
         merge=True                → ref.update(data) — обновляет только указанные ключи.
+
+        Перед записью данные рекурсивно приводятся к JSON-совместимому виду,
+        что предотвращает ошибки вида: TypeError: Object of type Decimal is not JSON serializable
         """
+        jsonable = _to_jsonable(data)
+
+        # Небольшая защита от пустых dict (на всякий случай)
+        if not isinstance(jsonable, dict):
+            _logger.warning(
+                "Ожидался dict для записи в Firebase, получено %s — оберну в корневой ключ",
+                type(jsonable).__name__,
+            )
+            jsonable = {"value": jsonable}
+
         if merge:
-            self._update(data)
+            self._update(jsonable)
         else:
-            self._set(data)
+            self._set(jsonable)
 
     # метод close() оставлен «на всякий» — Firebase Admin не требует явного закрытия
     def close(self) -> None:  # pragma: no cover
         """Заглушка: Admin SDK управляет соединениями автоматически."""
         self._ref = None  # type: ignore[assignment]
         _logger.info("FirebaseWriter закрыт")
-

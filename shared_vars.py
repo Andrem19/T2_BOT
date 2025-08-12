@@ -251,5 +251,3 @@ opt_types = ['put', 'call']
 data_path_sol = "../MARKET_DATA/_crypto_data/SOLUSDT/SOLUSDT_1m.csv"
 data_path_eth = "../MARKET_DATA/_crypto_data/ETHUSDT/ETHUSDT_1m.csv"
 data_path_btc = "../MARKET_DATA/_crypto_data/BTCUSDT/BTCUSDT_1m.csv"
-
-new_var = 0
