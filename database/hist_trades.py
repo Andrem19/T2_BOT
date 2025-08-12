@@ -22,6 +22,7 @@ class Trade(BaseModel):
     type_close: str
     time_close: str
     stage: str
+    est_fee: float = 0,0
     rel_atr: float = 0.08
     rsi: float = 55.4
 
@@ -101,7 +102,8 @@ async def save_trade(stage, last_px, type_close):
         open_time = position.get('open_time', '')
 
         # Расчёт прибыли
-        profit = ((last_px - fut_entrypx) * qty) + ((opt_closepx - opt_entrypx) * cont)
+        est_fee = calc_est_fee(cont, opt_entrypx, qty, fut_entrypx)
+        profit = (((last_px - fut_entrypx) * qty) + ((opt_closepx - opt_entrypx) * cont))-est_fee
 
         fut_profit = (last_px - fut_entrypx) * qty
         opt_profit = (opt_closepx - opt_entrypx) * cont
@@ -117,6 +119,8 @@ async def save_trade(stage, last_px, type_close):
         targ_pnl = position.get('pnl_target', 0)
         rel_atr = stage_data.get('rel_atr', 0)
         rsi = stage_data.get('rsi', 0)
+        
+        
 
         # Создание и сохранение записи Trade
         t = Trade.create(
@@ -138,9 +142,16 @@ async def save_trade(stage, last_px, type_close):
             type_close=t_close,
             time_close=time_close,
             stage=stage,
+            est_fee=est_fee,
             rel_atr=rel_atr,
             rsi=rsi
         )
         t.save()
     except Exception as e:
         sv.logger.exception(f'save_trade: {e}')
+
+
+def calc_est_fee(contracts, avg_px, qty, entry_px):
+    opt_fee = ((contracts * avg_px)*0.07)*2
+    fut_fee = ((qty*entry_px)*0.00045)*2
+    return fut_fee + opt_fee

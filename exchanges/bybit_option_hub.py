@@ -921,7 +921,7 @@ class ChainUtils:
             "gamma": _pick(t, "gamma"),
             "vega":  _pick(t, "vega"),
             "theta": _pick(t, "theta"),
-            "iv":    _pick(t, "markPriceIv", "iv"),
+            "iv":    _pick(t, "markIv", "iv"),
         }
         return {k: _to_float(v) for k, v in raw.items()}
 

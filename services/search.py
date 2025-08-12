@@ -1,5 +1,7 @@
 import shared_vars as sv
 from shared_vars import logger
+import math
+from typing import Tuple
 from datetime import datetime, timezone
 from exchanges.bybit_option_hub import BybitOptionHub as BB
 from helpers.price_feed import PriceCache, CandleCache
@@ -25,6 +27,8 @@ async def search(which_pos_we_need: str):
         start = datetime.now().timestamp()
         sv.stages['simulation']['we_need'] = which_pos_we_need
         best_position = {
+            'iv': 0.2,
+            'q_frac': 0.1,
             'type': 'Put',
             'qty': 0,
             'ask_indicators': [98, 1],
@@ -54,11 +58,11 @@ async def search(which_pos_we_need: str):
             sv.stages['simulation']['atr'] = [round(atr_last), round(rel_atr, 6)]
             sv.stages['simulation']['rsi'] = round(rsi[-1], 2)
             
-            chain = BB.Chain.get_chain_full(underlying=k, days=2, with_greeks=False) or []
+            chain = BB.Chain.get_chain_full(underlying=k, days=2, with_greeks=True) or []
             
             h = datetime.now(timezone.utc).hour
             
-            day_opt = 0 if h >= 0 and h < 8 else 1
+            day_opt = 0 if h >= 0 and h < 7 else 1
             opt_day_1, _ = tools.get_next_friday_day(day_opt)
 
             
@@ -77,8 +81,9 @@ async def search(which_pos_we_need: str):
             avg = Simulation.avg_for_current_period_last_days(4)
             sv.stages['simulation']['period_avg_pnl'] = avg['pnl']
             sv.stages['simulation']['period_avg_dist'] = avg['dist']
-            print(avg)
-            distance = 0.013 if left_to_exp < 10 else 0.016 if left_to_exp < 15 or which_pos_we_need == 'second' else 0.022
+
+            distance = serv.get_distance(k, left_to_exp, which_pos_we_need)
+
             filtered_chain_0 = tools.filter_options_by_distance(filtered_chain_0, distance)
             
             amount_for_est = 1 if which_pos_we_need =='nothing' else sv.stages[which_pos_we_need]['amount']*v['kof']
@@ -93,6 +98,7 @@ async def search(which_pos_we_need: str):
                     logger.exception(e)
             for o in filtered_chain_0:
                 try:
+                    iv = o['iv']
                     symbol = o['symbol']
                     current_px = float(o['underlyingPrice'])
                     strike = float(o['strike'])
@@ -101,12 +107,19 @@ async def search(which_pos_we_need: str):
                     index_put = tools.index(ask,strike, left_to_exp, current_px, opt_type=mode)
                     ask_indicator = tools.option_ask_indicator(left_to_exp, strike, last_price, ask, mode, rel_atr)
                     
+                    q_frac_raw = iv_to_q(iv, left_to_exp)
+                    q_frac = q_frac_raw if q_frac_raw >= 0.01 else 0.01
+
                     diff = 0
                     if mode == 'put':
                         diff = tools.calculate_percent_difference(strike, current_px)
                     else:
                         diff = tools.calculate_percent_difference(current_px, strike)
-                    
+                        
+                    q_frac_t = q_frac if diff >= 0.004 else q_frac + (0.004-diff)
+                    sv.perc_t = [q_frac_t]
+                    sv.perc_tp = [q_frac]
+                    logger.info(f'iv: {iv}, q_frac: {q_frac}')
 
                     for p_t in sv.perc_t:
                         for p_tp in sv.perc_tp:
@@ -142,7 +155,9 @@ async def search(which_pos_we_need: str):
                             opt_qty['ask'] = ask*v['kof']
                             opt_qty['p_t'] = p_t
                             
+                            
                             stat, pnl, n = simulation(v['data'], opt_qty, params)
+                            # print(stat)
                             if pnl > best_position['pnl']:
                                 best_position['type'] = mode
                                 best_position['qty'] = opt_qty['qty']
@@ -155,11 +170,14 @@ async def search(which_pos_we_need: str):
                                 best_position['upper_perc'] = params['upper_perc']
                                 best_position['best_targ_bid'] = targ_bid
                                 best_position['pnl_upper'] = opt_qty['pnl_upper']
+                                best_position['pnl_lower'] = opt_qty['pnl_lower']
                                 best_position['ask'] = opt_qty['ask']
                                 best_position['ask_original'] = ask
                                 best_position['max_amount'] = o['askSize']
+                                best_position['iv'] = iv
+                                best_position['q_frac'] = q_frac
                                 best_position['pnl'] = pnl
-                                print(mode, pnl)
+                                logger.info(f'mode: {mode} best_pnl: {pnl}')
                                 define_sim_pos(copy.deepcopy(best_position))
                                 
                     
@@ -238,3 +256,22 @@ async def read_and_update_current_utc_hour(new_payload: Dict[str, Any]) -> Optio
     except Exception as e:
         sv.logger.exception(f"ERROR: (read_and_update_current_utc_hour) {e}\n\n{traceback.format_exc()}")
         return None
+
+def iv_to_q(iv_annual: float, hours_left: float) -> Tuple[float, float]:
+    """
+    Пересчёт годовой IV в 'типичный ход' (q-единицу) за заданное количество часов.
+
+    :param iv_annual: Годовая implied volatility, например 0.2892 (28.92%)
+    :param hours_left: Кол-во часов до экспирации
+    :return: (ход_в_долях, ход_в_процентах)
+    """
+    if iv_annual <= 0 or hours_left <= 0:
+        return 0.0, 0.0
+
+    # Переводим часы в долю года (берём 365 дней)
+    year_fraction = hours_left / (365 * 24)
+
+    # Типичный ход = годовая IV * корень из доли года
+    q_fraction = iv_annual * math.sqrt(year_fraction)
+
+    return q_fraction

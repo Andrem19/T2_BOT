@@ -7,8 +7,12 @@ class Commands(BaseModel):
     close_2: bool = False
     amount_1: int = 2
     amount_2: int = 4
-    expect_1: float = 0.20
-    expect_2: float = 0.40
+    expect_1_sol: float = 0.20
+    expect_2_sol: float = 0.40
+    expect_1_eth: float = 1.5
+    expect_2_eth: float = 2.7
+    expect_1_btc: float = 3.20
+    expect_2_btc: float = 5.20
     timer: int = 600
     process_id: int = 0
     man_pid: int = 0
@@ -20,6 +24,29 @@ class Commands(BaseModel):
     eth: bool = True
     sol: bool = False
 
+    @classmethod
+    def set_expect_1(cls, value: float, symbol: str):
+        inst = cls.get_instance()
+        if symbol == 'SOL':
+            inst.expect_1_sol = value
+        if symbol == 'ETH':
+            inst.expect_1_eth = value
+        if symbol == 'BTC':
+            inst.expect_1_btc = value
+        inst.save()
+        return inst
+
+    @classmethod
+    def set_expect_2(cls, value: float, symbol: str):
+        inst = cls.get_instance()
+        if symbol == 'SOL':
+            inst.expect_2_sol = value
+        if symbol == 'ETH':
+            inst.expect_2_eth = value
+        if symbol == 'BTC':
+            inst.expect_2_btc = value
+        inst.save()
+        return inst
 
     @classmethod
     def set_put(cls, value: bool) :
@@ -119,19 +146,7 @@ class Commands(BaseModel):
         inst.save()
         return inst 
     
-    @classmethod
-    def set_expect_1(cls, value: float):
-        inst = cls.get_instance()
-        inst.expect_1 = value
-        inst.save()
-        return inst
 
-    @classmethod
-    def set_expect_2(cls, value: float):
-        inst = cls.get_instance()
-        inst.expect_2 = value
-        inst.save()
-        return inst
 
     @classmethod
     def set_timer(cls, value: int):

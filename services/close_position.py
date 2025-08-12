@@ -28,7 +28,7 @@ async def close_position_fully(pos_name, reason, last_px):
         if abs(fut_size) >= 1e-9:
             await close_futures(acc, symbol_fut, pos_name, fut_size)
     
-    if reason == 'no_fut_sl' or reason == 'sl_hit' or reason == 'pnl_hit_opt':
+    if reason == 'no_fut_sl' or reason == 'sl_hit' or reason == 'pnl_hit_opt' or reason == 'close_command':
         await close_option(acc, reason, pos_name)
     
     # обнулить состояние

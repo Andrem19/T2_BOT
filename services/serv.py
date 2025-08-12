@@ -66,8 +66,6 @@ async def refresh_commands_from_bd():
         com = Commands.get_instance()
         sv.stages['first']['amount'] = com.amount_1
         sv.stages['second']['amount'] = com.amount_2
-        sv.stages['first']['expect'] = com.expect_1
-        sv.stages['second']['expect'] = com.expect_2
         sv.stages['simulation']['fut_perc'] = com.fut_perc
         sv.timer_msg = com.timer
         sv.close_1 = com.close_1
@@ -87,6 +85,7 @@ async def refresh_commands_from_bd():
         if com.call:
             opt_types.append('call')
         sv.opt_types = opt_types
+        return com
     except Exception as e:
         logger.exception(e)
     
@@ -292,3 +291,44 @@ async def get_balances():
         return bal, msg
     except Exception as e:
         logger.exception(f'ERROR: (serv.get_balances) {e}')
+
+
+def get_distance(symbol: str = 'BTC', left_to_exp: float = 10.0, which_pos_we_need: str = 'second'):
+    distance = 0.012
+    if symbol in ['ETH', 'SOL']:
+        distance = 0.013 if left_to_exp < 10 else 0.016 if left_to_exp < 15 or which_pos_we_need == 'second' else 0.022
+    elif symbol in ['BTC']:
+        distance = 0.004 if left_to_exp < 10 else 0.005 if left_to_exp < 15 or which_pos_we_need == 'second' else 0.006
+    return distance
+
+
+
+def hours_until_next_8utc() -> float:
+    now = datetime.now(timezone.utc)
+    target = now.replace(hour=8, minute=0, second=0, microsecond=0)
+
+    # Если уже после 8 утра — сдвигаем на следующий день
+    if now >= target:
+        target += timedelta(days=1)
+
+    diff = target - now
+    return diff.total_seconds() / 3600.0
+
+def get_expect(com: Commands, which_pos_we_need: str = 'second', symbol: str = 'BTC'):
+    expect = 10000
+    if which_pos_we_need == 'first':
+        if symbol == 'BTC':
+            expect = com.expect_1_btc
+        elif symbol == 'ETH':
+            expect = com.expect_1_eth
+        elif symbol == 'SOL':
+            expect = com.expect_1_sol
+    elif which_pos_we_need == 'second':
+        if symbol == 'BTC':
+            expect = com.expect_2_btc
+        elif symbol == 'ETH':
+            expect = com.expect_2_eth
+        elif symbol == 'SOL':
+            expect = com.expect_2_sol
+    return expect
+

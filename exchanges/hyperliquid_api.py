@@ -196,7 +196,7 @@ class HL:
             dec  = int(info["szDecimals"])
             size = round(amount_coins or amount_usdt / HL.get_last_price(coin, account_idx), dec)
 
-            lev = min(8, int(info["maxLeverage"]))
+            lev = min(20, int(info["maxLeverage"]))
             HL.set_leverage(coin, lev, account_idx)
 
             is_buy = sd == "Buy"

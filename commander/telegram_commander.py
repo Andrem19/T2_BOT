@@ -58,16 +58,22 @@ async def types(type_P_C: str, flag_0_1: str):
     except Exception as e:
         print(e)
     
+async def futperc(val: str) -> None:
+    try:
+        Commands.set_fut_perc(float(val))
+        await tel.send_inform_message("COLLECTOR_API", f"New fut_perc: {val}", "", False)
+    except Exception as e:
+        print(e)
     
-async def expect(val: str, pos) -> None:
+async def expect(val: str, pos: str, symbol: str) -> None:
     try:
         p=int(pos)
         if p == 1:
-            Commands.set_expect_1(float(val))
-            await tel.send_inform_message("COLLECTOR_API", f"New expect first: {val}", "", False)
+            Commands.set_expect_1(float(val), symbol.upper())
+            await tel.send_inform_message("COLLECTOR_API", f"New expect {symbol.upper()} first: {val}", "", False)
         else:
-            Commands.set_expect_2(float(val))
-            await tel.send_inform_message("COLLECTOR_API", f"New expect second: {val}", "", False)
+            Commands.set_expect_2(float(val), symbol.upper())
+            await tel.send_inform_message("COLLECTOR_API", f"New expect {symbol.upper()} second: {val}", "", False)
     except Exception as e:
         print(e)
 
@@ -202,6 +208,7 @@ def init_commander():
     sv.commander.add_command(["timer"], timer)
     sv.commander.add_command(["amount"], amount)
     sv.commander.add_command(["expect"], expect)
+    sv.commander.add_command(["futperc"], futperc)
     sv.commander.add_command(["pids"], get_pids)
     sv.commander.add_command(["com"], commands_db)
     sv.commander.add_command(["types"], types)

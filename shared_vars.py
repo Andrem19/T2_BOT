@@ -17,6 +17,8 @@ stages = {
         'last_px': 0,
         'we_need': 'first',
         'position_1': {
+            'iv': 0.2,
+            'q_frac': 0.1,
             'type': 'Put',
             'qty': 0,
             'ask_indicators': [98, 1],
@@ -124,7 +126,7 @@ stages = {
     }
 }
 
-
+actual_bd = None
 
 
     #[{'symbol': 'SOL-16JUL25-155-P-USDT', 'leverage': '', 'autoAddMargin': 0, 'avgPrice': '0.28', 'liqPrice': '', 
@@ -158,28 +160,28 @@ bids_btc = {
     0.045: 4700
 }
 
-perc_t = [0.025, 0.03, 0.04]
-perc_tp = [0.02, 0.025, 0.03]
+perc_t = [0.025, 0.03]
+perc_tp = [0.01, 0.015, 0.02]
 
 instruments = {
     'ETH': {
         'bids': bids_eth,
         'data': None,
-        'kof': 0.05,
+        'kof': 0.3,
         'round': 1,
         'overpay_pad': 0.2,
         },
     'BTC': {
         'bids': bids_btc,
         'data': None,
-        'kof': 0.002,
+        'kof': 0.01,
         'round': 2,
         'overpay_pad': 0.50,
         },
     'SOL': {
         'bids': bids_sol,
         'data': None,
-        'kof':1,
+        'kof':7,
         'round': 0,
         'overpay_pad': 0.01,
         }
