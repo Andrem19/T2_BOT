@@ -43,11 +43,13 @@ perc_tp = [0.02, 0.025, 0.03, 0.04]
 
 
 async def main():
-    h = datetime.now(timezone.utc).hour
-    print(h)
-    BB.initialise(testnet=False)
-    bybit_bal_1 = BB.Trading.get_wallet_balance(account_idx=2)
-    print(bybit_bal_1['result']['list'][0]['totalEquity'])
+    res = HL.open_TP('BTCUSDT', 'Sell', 0.00366, 119826, 0.02)
+    print(res)
+    # h = datetime.now(timezone.utc).hour
+    # print(h)
+    # BB.initialise(testnet=False)
+    # bybit_bal_1 = BB.Trading.get_wallet_balance(account_idx=2)
+    # print(bybit_bal_1['result']['list'][0]['totalEquity'])
     # initialize("tbot.db")
     # hist = Trade.last_n_days(2)
     # hist_dicts = [vars(obj) for obj in hist]

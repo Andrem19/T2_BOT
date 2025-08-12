@@ -59,12 +59,12 @@ async def open_futures(position: dict, which_pos_we_need: str):
             
             sl_px = position['lower_perc'] if size_px > 0 else position['upper_perc']
             
-            HL.open_SL(symbol, side, size_px, entry_px, sl_px, acc)
+            HL.open_SL(symbol, side, abs(size_px), entry_px, sl_px, acc)
             logger.info("P1 Stop Loss opened.")
             
             tp_px = position['upper_perc'] if size_px > 0 else position['lower_perc']
             
-            HL.open_TP(symbol, side, size_px, entry_px, tp_px, acc)
+            HL.open_TP(symbol, side, abs(size_px), entry_px, tp_px, acc)
             logger.info("P1 Take Profit opened.")
             
             open_time = HL.get_open_time(symbol, acc)
