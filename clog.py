@@ -3,12 +3,26 @@
 # sudo systemctl stop t2-manager
 # sudo systemctl disable t2-manager
 # sudo systemctl status t2-manager
-import argparse
+# sudo systemctl stop sqlite-web      # остановить
+# sudo systemctl start sqlite-web     # запустить
+# sudo systemctl restart sqlite-web   # перезапустить
+# sudo systemctl disable sqlite-web   # отключить автозапуск
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# ======= НАСТРОЙКИ (правь только это при необходимости) =======
+HOST = "54.254.56.129"
+USER = "ubuntu"
+PORT = 22
+KEY_PATH = Path("/home/jupiter/.ssh/lightsail.pem")
+REMOTE_DIR = Path("/home/ubuntu/T2_BOT/_logs")
+# Если нужно забрать один конкретный файл из REMOTE_DIR — укажи его имя (например, "trade.log").
+# Если None или пусто — скопируется весь каталог REMOTE_DIR целиком.
+COPY_ONLY_FILE = None#'bot.log'  # например: "trade.log" или "subdir/errors.log"
+# ===============================================================
 
 def check_prereqs():
     from shutil import which
@@ -20,23 +34,18 @@ def ensure_key_permissions(key_path: Path):
     if not key_path.exists():
         print(f"Ошибка: ключ не найден: {key_path}", file=sys.stderr)
         sys.exit(1)
-    # SSH требует права 600 на приватный ключ
     try:
         os.chmod(key_path, 0o600)
     except PermissionError:
-        # Если нет прав менять chmod, просто предупреждаем
         pass
 
-def run_scp_copy(host: str, user: str, port: int, key_path: Path, remote_dir: str, dest_parent: Path):
-    # Копируем директорию целиком в текущую папку:
-    #   scp -r -i KEY -P PORT -o StrictHostKeyChecking=accept-new ubuntu@host:/path/_logs .
-    # Перед этим удалим локальный _logs, если он есть.
-    local_dir = dest_parent / Path(remote_dir).name
+def run_scp_copy_dir(host: str, user: str, port: int, key_path: Path, remote_dir: Path, dest_parent: Path):
+    local_dir = dest_parent / remote_dir.name
     if local_dir.exists():
         print(f"Удаляю локальную папку: {local_dir}")
         shutil.rmtree(local_dir)
 
-    print(f"Копирую {user}@{host}:{remote_dir} -> {dest_parent}")
+    print(f"Копирую каталог {user}@{host}:{remote_dir} -> {dest_parent}")
     cmd = [
         "scp",
         "-r",
@@ -46,43 +55,76 @@ def run_scp_copy(host: str, user: str, port: int, key_path: Path, remote_dir: st
         f"{user}@{host}:{remote_dir}",
         str(dest_parent)
     ]
-    # Выполняем и пробрасываем вывод
     try:
-        result = subprocess.run(cmd, check=True, text=True, capture_output=False)
+        subprocess.run(cmd, check=True, text=True, capture_output=False)
     except subprocess.CalledProcessError as e:
-        print("Ошибка при копировании scp.", file=sys.stderr)
+        print("Ошибка при копировании scp каталога.", file=sys.stderr)
         sys.exit(e.returncode)
 
-    # Финальная проверка
     if not local_dir.exists():
         print(f"Ошибка: после копирования не найден локальный каталог: {local_dir}", file=sys.stderr)
         sys.exit(1)
     print(f"Готово. Локальная папка: {local_dir}")
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Скопировать удалённый каталог /home/ubuntu/T2_BOT/_logs на локальную машину (в текущую директорию), заменив существующий."
-    )
-    parser.add_argument("--host", default='54.254.56.129', help="Статический IP или домен сервера Lightsail")
-    parser.add_argument("--user", default="ubuntu", help="Пользователь SSH (по умолчанию: ubuntu)")
-    parser.add_argument("--port", type=int, default=22, help="Порт SSH (по умолчанию: 22)")
-    parser.add_argument("--key", default="/home/jupiter/.ssh/lightsail.pem", help="Путь к приватному ключу SSH")
-    parser.add_argument("--remote-path", default="/home/ubuntu/T2_BOT/_logs", help="Удалённый путь к каталогу _logs")
-    args = parser.parse_args()
+def run_scp_copy_file(host: str, user: str, port: int, key_path: Path, remote_dir: Path, file_relpath: str, dest_parent: Path):
+    """
+    Копирует ОДИН файл из remote_dir/file_relpath в dest_parent, сохраняя имя файла.
+    Поддерживает вложенные подпапки в file_relpath (например 'sub/a.log').
+    """
+    file_relpath = file_relpath.strip().lstrip("/")  # на случай, если случайно дадут '/trade.log'
+    remote_path = f"{user}@{host}:{remote_dir}/{file_relpath}"
+    dest_path = dest_parent / Path(file_relpath).name  # кладём рядом, без структуры подпапок
 
+    # Если хочешь сохранять подпапки локально — раскомментируй следующие две строки
+    # dest_path = dest_parent / file_relpath
+    # dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"Копирую файл {remote_path} -> {dest_path}")
+    cmd = [
+        "scp",
+        "-i", str(key_path),
+        "-P", str(port),
+        "-o", "StrictHostKeyChecking=accept-new",
+        remote_path,
+        str(dest_path)
+    ]
+    try:
+        subprocess.run(cmd, check=True, text=True, capture_output=False)
+    except subprocess.CalledProcessError as e:
+        print("Ошибка при копировании scp файла.", file=sys.stderr)
+        sys.exit(e.returncode)
+
+    if not dest_path.exists():
+        print(f"Ошибка: после копирования не найден локальный файл: {dest_path}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Готово. Локальный файл: {dest_path}")
+
+def main():
     dest_parent = Path.cwd()
-    key_path = Path(args.key)
+    key_path = KEY_PATH
 
     check_prereqs()
     ensure_key_permissions(key_path)
-    run_scp_copy(
-        host=args.host,
-        user=args.user,
-        port=args.port,
-        key_path=key_path,
-        remote_dir=args.remote_path.rstrip("/"),
-        dest_parent=dest_parent
-    )
+
+    if COPY_ONLY_FILE and str(COPY_ONLY_FILE).strip():
+        run_scp_copy_file(
+            host=HOST,
+            user=USER,
+            port=PORT,
+            key_path=key_path,
+            remote_dir=REMOTE_DIR,
+            file_relpath=str(COPY_ONLY_FILE),
+            dest_parent=dest_parent,
+        )
+    else:
+        run_scp_copy_dir(
+            host=HOST,
+            user=USER,
+            port=PORT,
+            key_path=key_path,
+            remote_dir=REMOTE_DIR,
+            dest_parent=dest_parent,
+        )
 
 if __name__ == "__main__":
     main()
