@@ -32,7 +32,7 @@ def simulation(data, i, fut_calc, params, end_idx):
         else:
             middle_2 = open_price * (1+strike)
 
-        all_fees = -0.73
+        all_fees = -0.80
         pnl = 0
         duration = 0
         close_price = 0
