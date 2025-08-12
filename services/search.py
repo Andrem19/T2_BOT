@@ -159,6 +159,7 @@ async def search(which_pos_we_need: str):
                             
                             stat, pnl, n = simulation(v['data'], opt_qty, params)
                             # print(stat)
+                            logger.info(f'mode: {mode} best_pnl: {pnl}')
                             if pnl > best_position['pnl']:
                                 best_position['type'] = mode
                                 best_position['qty'] = opt_qty['qty']
@@ -178,7 +179,7 @@ async def search(which_pos_we_need: str):
                                 best_position['iv'] = iv
                                 best_position['q_frac'] = q_frac
                                 best_position['pnl'] = pnl
-                                logger.info(f'mode: {mode} best_pnl: {pnl}')
+                                
                                 define_sim_pos(copy.deepcopy(best_position))
                                 
                     
