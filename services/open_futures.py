@@ -47,7 +47,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
                         break
                     await asyncio.sleep(4)
         
-        if new_position and new_position.get('size', 0) > 0:
+        if new_position and abs(new_position.get('size', 0)) > 0:
             logger.info(f"Futures position {symbol} - {fut_amt} opened.")
             sv.stages[which_pos_we_need]['exist'] = True
             sv.stages[which_pos_we_need]['base_coin'] = position['name']
