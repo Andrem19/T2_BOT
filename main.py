@@ -87,7 +87,7 @@ async def main():
             #===========OPEN POSITION==============
             h = datetime.now(timezone.utc).hour
             
-            if which_pos_we_need != 'nothing' and h not in [3,4,5,6,7]:
+            if which_pos_we_need != 'nothing' and h not in [1,2,3,4,5,6,7]:
                 
                 left_to_exp = serv.hours_until_next_8utc()
                 best_simulation = sv.stages['simulation']['position_1']
