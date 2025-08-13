@@ -125,66 +125,66 @@ async def search(which_pos_we_need: str):
                         sv.perc_tp = [q_frac]
                             
                     logger.info(f'iv: {iv}, q_frac: {q_frac}')
-
-                    for p_t in sv.perc_t:
-                        for p_tp in sv.perc_tp:
-                            take_profit = 0
-                            target = 0
-                            if mode == 'put':
-                                take_profit = current_px * (1+p_tp)
-                                target = strike * (1-p_t)
-                                tp_pct, sl_pct = tools.calc_tp_sl_pct(current_px, take_profit, target)
-                            elif mode == 'call':
-                                take_profit = current_px * (1-p_tp)
-                                target = strike * (1+p_t)
-                                tp_pct, sl_pct = tools.calc_tp_sl_pct(current_px, target, take_profit)
-                            
-                            targ_bid = tools.calc_bid(v['bids'], p_t)
-                            params = {
-                                'lower_perc': sl_pct,
-                                'upper_perc': tp_pct,
-                                'hours': left_to_exp,
-                                'mode': mode,
-                            }
-                            try:
-                                fut_perc = sv.stages['simulation'].get('fut_perc', 0.80)
+                    for fut_p in [0.5, 0.7]:
+                        for p_t in sv.perc_t:
+                            for p_tp in sv.perc_tp:
+                                take_profit = 0
+                                target = 0
                                 if mode == 'put':
-                                    opt_qty = tools.calc_futures_qty(take_profit, target, current_px, ask*v['kof'], (targ_bid-ask)*v['kof'], mode, share_target=fut_perc)
-                                else:
-                                    opt_qty = tools.calc_futures_qty(target, take_profit, current_px,(targ_bid-ask)*v['kof'], ask*v['kof'], mode, share_target=fut_perc)
-                            except Exception as e:
-                                print(e)
-                                continue
-                            
-                            
-                            opt_qty['ask'] = ask*v['kof']
-                            opt_qty['p_t'] = p_t
-                            
-                            
-                            stat, pnl, n = simulation(v['data'], opt_qty, params)
-                            # print(stat)
-                            logger.info(f'mode: {mode} best_pnl: {pnl}')
-                            if pnl > best_position['pnl']:
-                                best_position['type'] = mode
-                                best_position['qty'] = opt_qty['qty']
-                                best_position['ask_indicators'] = [round(index_put, 2), round(ask_indicator, 2)]
-                                best_position['name'] = symbol[:3]
-                                best_position['symbol'] = symbol
-                                best_position['strike_perc'] = diff
-                                best_position['p_t'] = p_t
-                                best_position['lower_perc'] = params['lower_perc']
-                                best_position['upper_perc'] = params['upper_perc']
-                                best_position['best_targ_bid'] = targ_bid
-                                best_position['pnl_upper'] = opt_qty['pnl_upper']
-                                best_position['pnl_lower'] = opt_qty['pnl_lower']
-                                best_position['ask'] = opt_qty['ask']
-                                best_position['ask_original'] = ask
-                                best_position['max_amount'] = o['askSize']
-                                best_position['iv'] = iv
-                                best_position['q_frac'] = q_frac
-                                best_position['pnl'] = pnl
+                                    take_profit = current_px * (1+p_tp)
+                                    target = strike * (1-p_t)
+                                    tp_pct, sl_pct = tools.calc_tp_sl_pct(current_px, take_profit, target)
+                                elif mode == 'call':
+                                    take_profit = current_px * (1-p_tp)
+                                    target = strike * (1+p_t)
+                                    tp_pct, sl_pct = tools.calc_tp_sl_pct(current_px, target, take_profit)
                                 
-                                define_sim_pos(copy.deepcopy(best_position))
+                                targ_bid = tools.calc_bid(v['bids'], p_t)
+                                params = {
+                                    'lower_perc': sl_pct,
+                                    'upper_perc': tp_pct,
+                                    'hours': left_to_exp,
+                                    'mode': mode,
+                                }
+                                try:
+                                    fut_perc = fut_p# sv.stages['simulation'].get('fut_perc', 0.80)
+                                    if mode == 'put':
+                                        opt_qty = tools.calc_futures_qty(take_profit, target, current_px, ask*v['kof'], (targ_bid-ask)*v['kof'], mode, share_target=fut_perc)
+                                    else:
+                                        opt_qty = tools.calc_futures_qty(target, take_profit, current_px,(targ_bid-ask)*v['kof'], ask*v['kof'], mode, share_target=fut_perc)
+                                except Exception as e:
+                                    print(e)
+                                    continue
+                                
+                                
+                                opt_qty['ask'] = ask*v['kof']
+                                opt_qty['p_t'] = p_t
+                                
+                                
+                                stat, pnl, n = simulation(v['data'], opt_qty, params)
+                                # print(stat)
+                                logger.info(f'mode: {mode} best_pnl: {pnl}')
+                                if pnl > best_position['pnl']:
+                                    best_position['type'] = mode
+                                    best_position['qty'] = opt_qty['qty']
+                                    best_position['ask_indicators'] = [round(index_put, 2), round(ask_indicator, 2)]
+                                    best_position['name'] = symbol[:3]
+                                    best_position['symbol'] = symbol
+                                    best_position['strike_perc'] = diff
+                                    best_position['p_t'] = p_t
+                                    best_position['lower_perc'] = params['lower_perc']
+                                    best_position['upper_perc'] = params['upper_perc']
+                                    best_position['best_targ_bid'] = targ_bid
+                                    best_position['pnl_upper'] = opt_qty['pnl_upper']
+                                    best_position['pnl_lower'] = opt_qty['pnl_lower']
+                                    best_position['ask'] = opt_qty['ask']
+                                    best_position['ask_original'] = ask
+                                    best_position['max_amount'] = o['askSize']
+                                    best_position['iv'] = iv
+                                    best_position['q_frac'] = q_frac
+                                    best_position['pnl'] = pnl
+                                    
+                                    define_sim_pos(copy.deepcopy(best_position))
                                 
                     
                 except Exception as e:
