@@ -220,6 +220,7 @@ def init_commander():
     sv.commander.add_command(["pids"], get_pids)
     sv.commander.add_command(["com"], commands_db)
     sv.commander.add_command(["types"], types)
+    sv.commander.add_command(["tail"], tail)
     sv.commander.add_command(["hist"], trade_hist)
     sv.commander.add_command(["bal"], balances)
     sv.commander.add_command(["simhist"], sim_hist)
