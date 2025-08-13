@@ -76,6 +76,8 @@ async def main():
         try:
             #======COMMANDS==========
             
+            h = datetime.now(timezone.utc).hour
+            serv.auto_set_expect(h)         
             sv.actual_bd = await serv.refresh_commands_from_bd()
             
             #===========CALCULATION================
@@ -85,8 +87,7 @@ async def main():
                 await search.search(which_pos_we_need)
             
             #===========OPEN POSITION==============
-            h = datetime.now(timezone.utc).hour
-            serv.auto_set_expect(h)
+
             if which_pos_we_need != 'nothing' and h not in [4,5,6,7]:
                 
                 left_to_exp = serv.hours_until_next_8utc()
