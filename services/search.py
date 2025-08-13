@@ -117,8 +117,9 @@ async def search(which_pos_we_need: str):
                     mode = o['optionsType'].lower()
                     index_put = tools.index(ask,strike, left_to_exp, current_px, opt_type=mode)
                     ask_indicator = tools.option_ask_indicator(left_to_exp, strike, last_price, ask, mode, rel_atr)
+                    t_to_exp = tools.time_to_expiry(o['deliveryTime'])
                     
-                    q_frac_raw = iv_to_q(iv, left_to_exp)
+                    q_frac_raw = iv_to_q(iv, t_to_exp)
                     q_frac = max(min(q_frac_raw, 0.012), 0.008)#if q_frac_raw <= 0.01 else 0.01
 
                     diff = 0
@@ -131,6 +132,9 @@ async def search(which_pos_we_need: str):
                     if k == 'BTC':
                         sv.perc_t = [q_frac_t]
                         sv.perc_tp = [q_frac]
+                        if t_to_exp > 24:
+                            sv.perc_t.append(q_frac_t+0.005)
+                            sv.perc_tp.append(q_frac+0.004)
                             
                     logger.info(f'iv: {iv}, q_frac: {q_frac}')
 
