@@ -120,7 +120,11 @@ async def search(which_pos_we_need: str):
                     t_to_exp = tools.time_to_expiry(o['deliveryTime'])
                     
                     q_frac_raw = iv_to_q(iv, t_to_exp)
-                    q_frac = max(min(q_frac_raw, 0.012), 0.008)#if q_frac_raw <= 0.01 else 0.01
+                    q_frac =0.01
+                    if t_to_exp < 24:
+                        q_frac = max(min(q_frac_raw, 0.012), 0.008)#if q_frac_raw <= 0.01 else 0.01
+                    else:
+                        q_frac = max(min(q_frac_raw, 0.018), 0.01)
 
                     diff = 0
                     if mode == 'put':
