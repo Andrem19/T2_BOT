@@ -73,6 +73,17 @@ async def search(which_pos_we_need: str):
             if 'put' in sv.opt_types:
                 filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
                 filtered_chain_0.extend(filtered_chain_puts)
+                
+            day_opt = 1 if h >= 0 and h < 7 else 2
+            opt_day_1, _ = tools.get_next_friday_day(day_opt)
+
+            
+            if 'call' in sv.opt_types:
+                filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
+                filtered_chain_0.extend(filtered_chain_calls)
+            if 'put' in sv.opt_types:
+                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
+                filtered_chain_0.extend(filtered_chain_puts)
 
             
             left_to_exp = tools.time_to_expiry(filtered_chain_0[0]['deliveryTime'])
@@ -118,8 +129,8 @@ async def search(which_pos_we_need: str):
                         
                     q_frac_t = q_frac if diff >= 0.0025 else q_frac + (0.0025-diff)
                     if k == 'BTC':
-                        sv.perc_t = [q_frac_t, q_frac_t+0.001, q_frac_t-0.002]
-                        sv.perc_tp = [q_frac, q_frac+0.001, q_frac-0.002]
+                        sv.perc_t = [q_frac_t]
+                        sv.perc_tp = [q_frac]
                             
                     logger.info(f'iv: {iv}, q_frac: {q_frac}')
 
