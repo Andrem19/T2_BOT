@@ -18,10 +18,10 @@ HOST = "54.254.56.129"
 USER = "ubuntu"
 PORT = 22
 KEY_PATH = Path("/home/jupiter/.ssh/lightsail.pem")
-REMOTE_DIR = Path("/home/ubuntu/T2_BOT")
+REMOTE_DIR = Path("/home/ubuntu/T2_BOT/_logs")
 # Если нужно забрать один конкретный файл из REMOTE_DIR — укажи его имя (например, "trade.log").
 # Если None или пусто — скопируется весь каталог REMOTE_DIR целиком.
-COPY_ONLY_FILE = 'tbot.db'#None#'bot.log'  # например: "trade.log" или "subdir/errors.log"
+COPY_ONLY_FILE = None#'bot.log'  # например: "trade.log" или "subdir/errors.log"
 # ===============================================================
 
 def check_prereqs():
