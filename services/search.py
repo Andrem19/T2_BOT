@@ -73,17 +73,6 @@ async def search(which_pos_we_need: str):
             if 'put' in sv.opt_types:
                 filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
                 filtered_chain_0.extend(filtered_chain_puts)
-                
-            day_opt = 1 if h >= 0 and h < 7 else 2
-            opt_day_1, _ = tools.get_next_friday_day(day_opt)
-
-            
-            if 'call' in sv.opt_types:
-                filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
-                filtered_chain_0.extend(filtered_chain_calls)
-            if 'put' in sv.opt_types:
-                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
-                filtered_chain_0.extend(filtered_chain_puts)
 
             
             left_to_exp = tools.time_to_expiry(filtered_chain_0[0]['deliveryTime'])
@@ -117,14 +106,13 @@ async def search(which_pos_we_need: str):
                     mode = o['optionsType'].lower()
                     index_put = tools.index(ask,strike, left_to_exp, current_px, opt_type=mode)
                     ask_indicator = tools.option_ask_indicator(left_to_exp, strike, last_price, ask, mode, rel_atr)
-                    t_to_exp = tools.time_to_expiry(o['deliveryTime'])
+
                     
-                    q_frac_raw = iv_to_q(iv, t_to_exp)
+                    q_frac_raw = iv_to_q(iv, left_to_exp)
                     q_frac =0.01
-                    if t_to_exp < 24:
-                        q_frac = max(min(q_frac_raw, 0.012), 0.008)#if q_frac_raw <= 0.01 else 0.01
-                    else:
-                        q_frac = max(min(q_frac_raw, 0.018), 0.01)
+
+                    q_frac = max(min(q_frac_raw, 0.012), 0.008)#if q_frac_raw <= 0.01 else 0.01
+
 
                     diff = 0
                     if mode == 'put':
@@ -136,9 +124,6 @@ async def search(which_pos_we_need: str):
                     if k == 'BTC':
                         sv.perc_t = [q_frac_t]
                         sv.perc_tp = [q_frac]
-                        if t_to_exp > 24:
-                            sv.perc_t.append(q_frac_t+0.005)
-                            sv.perc_tp.append(q_frac+0.004)
                             
                     logger.info(f'iv: {iv}, q_frac: {q_frac}')
 
