@@ -109,7 +109,6 @@ async def search(which_pos_we_need: str):
 
                     
                     q_frac_raw = iv_to_q(iv, left_to_exp)
-                    q_frac =0.01
 
                     q_frac = max(min(q_frac_raw, 0.012), 0.008)#if q_frac_raw <= 0.01 else 0.01
 
