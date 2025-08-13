@@ -208,7 +208,7 @@ async def read_and_update_current_utc_hour(new_payload: Dict[str, Any]) -> Optio
     try:
         new_payload = {
             'pnl': new_payload['pnl'],
-            'dist': round(new_payload['strike_perc'], 4)
+            'name': f"{new_payload['name']}-{new_payload['type']}"
         }
         # 1) UTC-дата и час
         now_utc = datetime.now(timezone.utc)
