@@ -332,3 +332,8 @@ def get_expect(com: Commands, which_pos_we_need: str = 'second', symbol: str = '
             expect = com.expect_2_sol
     return expect
 
+def auto_set_expect(h):
+    exp = sv.exp_rel[h]
+    Commands.set_expect_2(exp, 'BTC')
+    Commands.set_expect_1(exp-1, 'BTC')
+    logger.info(f'New expect: 1={exp-1} 2={exp}')

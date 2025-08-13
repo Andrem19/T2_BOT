@@ -251,3 +251,30 @@ opt_types = ['put', 'call']
 data_path_sol = "../MARKET_DATA/_crypto_data/SOLUSDT/SOLUSDT_1m.csv"
 data_path_eth = "../MARKET_DATA/_crypto_data/ETHUSDT/ETHUSDT_1m.csv"
 data_path_btc = "../MARKET_DATA/_crypto_data/BTCUSDT/BTCUSDT_1m.csv"
+
+exp_rel = {
+    8: 4.0,
+    9: 4.1,
+    10: 4.5,
+    11: 4.7,
+    12: 4.9,
+    13: 5.1,
+    14: 5.4,
+    15: 5.9,
+    16: 6.1,
+    17: 6.5,
+    18: 6.9,
+    19: 7.3,
+    20: 7.6,
+    21: 7.9,
+    22: 8.3,
+    23: 9.0,
+    0: 9.5,
+    1: 10.1,
+    2: 10.6,
+    3: 11.0,
+    4: 12.0,
+    5: 12.0,
+    6: 12.0,
+    7: 13.0
+}
