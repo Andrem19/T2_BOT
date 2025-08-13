@@ -18,6 +18,7 @@ class Commands(BaseModel):
     man_pid: int = 0
     simulation: bool = True
     fut_perc: float = 0.8
+    day_opt: int = 0
     call: bool = False
     put: bool = True
     btc: bool = False
@@ -122,6 +123,13 @@ class Commands(BaseModel):
     def set_man_pid(cls, value: int):
         inst = cls.get_instance()
         inst.man_pid = value
+        inst.save()
+        return inst
+
+    @classmethod
+    def set_day_opt(cls, value: int):
+        inst = cls.get_instance()
+        inst.day_opt = value
         inst.save()
         return inst
 

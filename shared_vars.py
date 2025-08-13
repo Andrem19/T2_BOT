@@ -252,6 +252,7 @@ data_path_sol = "../MARKET_DATA/_crypto_data/SOLUSDT/SOLUSDT_1m.csv"
 data_path_eth = "../MARKET_DATA/_crypto_data/ETHUSDT/ETHUSDT_1m.csv"
 data_path_btc = "../MARKET_DATA/_crypto_data/BTCUSDT/BTCUSDT_1m.csv"
 
+day_opt = 0
 exp_rel = {
     8: 4.0,
     9: 4.1,

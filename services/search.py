@@ -62,7 +62,7 @@ async def search(which_pos_we_need: str):
             
             h = datetime.now(timezone.utc).hour
             
-            day_opt = 0 if h >= 0 and h < 7 else 1
+            day_opt = sv.day_opt if h >= 0 and h < 7 else sv.day_opt+1
             opt_day_1, _ = tools.get_next_friday_day(day_opt)
 
             
@@ -110,7 +110,7 @@ async def search(which_pos_we_need: str):
                     
                     q_frac_raw = iv_to_q(iv, left_to_exp)
 
-                    q_frac = max(min(q_frac_raw, 0.012), 0.008)#if q_frac_raw <= 0.01 else 0.01
+                    q_frac = max(min(q_frac_raw, 0.012), 0.008)
 
 
                     diff = 0

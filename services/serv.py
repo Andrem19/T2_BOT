@@ -70,6 +70,7 @@ async def refresh_commands_from_bd():
         sv.timer_msg = com.timer
         sv.close_1 = com.close_1
         sv.close_2 = com.close_2
+        sv.day_opt = com.day_opt
         symbols = []
         if com.btc:
             symbols.append('BTC')

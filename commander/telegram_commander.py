@@ -173,7 +173,13 @@ async def tail(b_me_mo: str, lines: str):
         await tel.send_inform_message("COLLECTOR_API", f"{log}", "", False)
     except Exception as e:
         await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
-    
+
+async def day(day: str):
+    try:
+        Commands.set_day_opt(int(day))
+        await tel.send_inform_message("COLLECTOR_API", f"day_opt seted up to : {day}", "", False)
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
 
 async def get_pids():
     com = Commands.get_instance()
@@ -222,6 +228,7 @@ def init_commander():
     sv.commander.add_command(["com"], commands_db)
     sv.commander.add_command(["types"], types)
     sv.commander.add_command(["tail"], tail)
+    sv.commander.add_command(["day"], day)
     sv.commander.add_command(["hist"], trade_hist)
     sv.commander.add_command(["bal"], balances)
     sv.commander.add_command(["simhist"], sim_hist)
