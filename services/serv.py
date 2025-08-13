@@ -183,7 +183,7 @@ def format_option_message_html(data: Dict[str, Any]) -> str:
     Жирным: 'pnl', 'strike_perc'.
     Визуальная "раскраска" полей через цветные эмодзи, маркер стоит перед ключом.
     """
-    EXCLUDE_KEYS = {"name", "pnl_upper", "qty", "type"}
+    EXCLUDE_KEYS = {"name"}
     BOLD_FIELDS = {"pnl", "strike_perc"}
 
     FIELD_ORDER: List[str] = [
