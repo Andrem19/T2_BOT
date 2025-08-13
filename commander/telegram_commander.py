@@ -166,9 +166,9 @@ async def balances():
         await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
 
 
-async def tail(file: str, lines: str):
+async def tail(b_me_mo: str, lines: str):
     try:
-        f = 'bot.log' if file == 'b' else 'manager.err' if file == 'me' else 'manager.out' if file == 'mo' else 'bot.log'
+        f = 'bot.log' if b_me_mo == 'b' else 'manager.err' if b_me_mo == 'me' else 'manager.out' if b_me_mo == 'mo' else 'bot.log'
         log = tail_log(file_path=f'./_logs/{f}', lines_count=int(lines))
         await tel.send_inform_message("COLLECTOR_API", f"{log}", "", False)
     except Exception as e:
