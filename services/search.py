@@ -58,7 +58,7 @@ async def search(which_pos_we_need: str):
             sv.stages['simulation']['atr'] = [round(atr_last), round(rel_atr, 6)]
             sv.stages['simulation']['rsi'] = round(rsi[-1], 2)
             
-            chain = BB.Chain.get_chain_full(underlying=k, days=2, with_greeks=True) or []
+            chain = BB.Chain.get_chain_full(underlying=k, days=2+sv.day_opt, with_greeks=True) or []
             
             h = datetime.now(timezone.utc).hour
             
