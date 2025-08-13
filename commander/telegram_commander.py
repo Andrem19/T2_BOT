@@ -24,7 +24,7 @@ from database.hist_trades import Trade
 from database.simulation import Simulation
 import services.serv as serv
 from helpers.statistics import compute_trade_stats, visualize_trade_stats
-from commander.service import format_trades_report
+from commander.service import format_trades_report, tail_log
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +162,14 @@ async def balances():
     try:
         _, msg = await serv.get_balances()
         await tel.send_inform_message("COLLECTOR_API", f"{msg}", "", False)
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
+
+
+async def tail(lines: str):
+    try:
+        log = tail_log(file_path='_log/bot.log', lines_count=int(lines))
+        await tel.send_inform_message("COLLECTOR_API", f"{log}", "", False)
     except Exception as e:
         await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
     

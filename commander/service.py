@@ -1,5 +1,7 @@
 from typing import List, Dict, Any
 from datetime import datetime, timezone
+from pathlib import Path
+from collections import deque
 
 def format_trades_report(rows: List[Dict[str, Any]]) -> str:
     """
@@ -93,3 +95,28 @@ def format_trades_report(rows: List[Dict[str, Any]]) -> str:
     lines.append(f'\nSUM: {sum}')
 
     return "\n".join(lines)
+
+
+
+def tail_log(file_path: str, emoji: str = "🔹", lines_count: int = 10) -> str:
+    """
+    Читает последние lines_count строк из .log файла и возвращает красиво отформатированную строку.
+    
+    :param file_path: Путь к .log файлу
+    :param emoji: Эмодзи, добавляемое в начале каждой строки
+    :param lines_count: Количество строк с конца
+    :return: Готовая строка для отправки в Telegram
+    """
+    path = Path(file_path)
+    if not path.exists():
+        return f"❌ Лог-файл не найден: {file_path}"
+    
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            last_lines = deque(f, maxlen=lines_count)
+        
+        formatted_lines = [f"{emoji} {line.rstrip()}" for line in last_lines]
+        return "\n".join(formatted_lines)
+    
+    except Exception as e:
+        return f"⚠️ Ошибка при чтении файла: {e}"
