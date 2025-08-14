@@ -3,7 +3,7 @@ import traceback
 import shared_vars as sv
 from shared_vars import logger
 from decouple import config
-from helpers.price_feed import start_price_streams, ensure_streams_alive_for_symbols, PriceCache
+from helpers.price_feed import start_price_streams, ensure_streams_alive_for_symbols, PriceCache, CandleCache
 from helpers.safe_sender import safe_send
 from helpers.firebase_writer import FirebaseWriter
 import database.simple_orm as DataBase
@@ -75,8 +75,10 @@ async def main():
     while True:
         try:
             #======COMMANDS==========
-            
-            h = datetime.now(timezone.utc).hour
+            candels = CandleCache.get('BTCUSDT', 60)
+            dt = datetime.now(timezone.utc)
+            h = dt.hour
+            minute = dt.minute
             serv.auto_set_expect(h)         
             sv.actual_bd = await serv.refresh_commands_from_bd()
             
@@ -96,15 +98,17 @@ async def main():
                 distance = serv.get_distance(best_simulation['name'], left_to_exp, which_pos_we_need)
                 expect = serv.get_expect(sv.actual_bd, which_pos_we_need, best_simulation['name'])
                 
+                logger.info(f'current_price check: {candels[-1][4]}')
                 if best_simulation['pnl'] >= expect and best_simulation['strike_perc']<= distance:
-                    opt_is_open = await open_opt.open_opt(best_simulation, which_pos_we_need)
-                    if opt_is_open:
-                        fut_is_open = await open_fut.open_futures(best_simulation, which_pos_we_need)
-                        if fut_is_open:
-                            await refresh_opt.refresh_opt(0)
-                            serv.save_stages(sv.stages)
-                            _, msg_bal = await serv.get_balances()
-                            await tlg.send_option_message('COLLECTOR_API', f"✅✅✅\nBalances: {msg_bal}\nPosition was opened SUCCESSFULY!!!\n\n{serv.format_option_message_html(sv.stages['simulation']['position_1'])}", '', False)
+                    if h == 8 and minute in [56, 57, 58, 59] and candels[-6][4]*1.005 < candels[-1][4]:
+                        opt_is_open = await open_opt.open_opt(best_simulation, which_pos_we_need)
+                        if opt_is_open:
+                            fut_is_open = await open_fut.open_futures(best_simulation, which_pos_we_need)
+                            if fut_is_open:
+                                await refresh_opt.refresh_opt(0)
+                                serv.save_stages(sv.stages)
+                                _, msg_bal = await serv.get_balances()
+                                await tlg.send_option_message('COLLECTOR_API', f"✅✅✅\nBalances: {msg_bal}\nPosition was opened SUCCESSFULY!!!\n\n{serv.format_option_message_html(sv.stages['simulation']['position_1'])}", '', False)
 
             #========REFRESH POSITION INFO=========
             
