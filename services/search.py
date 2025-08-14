@@ -162,7 +162,7 @@ async def search(which_pos_we_need: str):
                             
                             
                             stat, pnl, n = simulation(v['data'], opt_qty, params)
-                            # logger.info(stat)
+                            logger.info(stat)
                             logger.info(f'mode-symb: {mode}-{symbol[:3]} over: {diff} best_pnl: {pnl}')
                             if pnl > best_position['pnl']:
                                 best_position['type'] = mode
