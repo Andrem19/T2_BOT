@@ -299,7 +299,7 @@ def get_distance(symbol: str = 'BTC', left_to_exp: float = 10.0, which_pos_we_ne
     if symbol in ['ETH', 'SOL']:
         distance = 0.013 if left_to_exp < 10 else 0.016 if left_to_exp < 15 or which_pos_we_need == 'second' else 0.022
     elif symbol in ['BTC']:
-        distance = 0.01 if left_to_exp < 10 else 0.012 if left_to_exp < 15 or which_pos_we_need == 'second' else  0.014
+        distance = 0.006 if left_to_exp < 10 else 0.009 if left_to_exp < 15 or which_pos_we_need == 'second' else  0.011
     return distance
 
 
@@ -336,7 +336,7 @@ def get_expect(com: Commands, which_pos_we_need: str = 'second', symbol: str = '
 def auto_set_expect(h):
     exp = sv.exp_rel[h]
     Commands.set_expect_2(exp, 'BTC')
-    Commands.set_expect_1(exp-2, 'BTC')
-    sv.stages['first']['expect'] = exp-2
+    Commands.set_expect_1(exp-1.5, 'BTC')
+    sv.stages['first']['expect'] = exp-1.5
     sv.stages['second']['expect'] = exp
     logger.info(f'New expect: 1={exp-1} 2={exp}')

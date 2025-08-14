@@ -107,21 +107,16 @@ async def search(which_pos_we_need: str):
                     index_put = tools.index(ask,strike, left_to_exp, current_px, opt_type=mode)
                     ask_indicator = tools.option_ask_indicator(left_to_exp, strike, last_price, ask, mode, rel_atr)
 
-                    
                     q_frac = iv_to_q(iv, left_to_exp)
-
-                    # q_frac = max(min(q_frac_raw, 0.012), 0.008)
-
-
+                    
                     diff = 0
                     if mode == 'put':
                         diff = tools.calculate_percent_difference(strike, current_px)
                     else:
                         diff = tools.calculate_percent_difference(current_px, strike)
                         
-                    q_frac_t = q_frac if diff >= 0.0025 else q_frac + (0.0025-diff)
                     if k == 'BTC':
-                        sv.perc_t = [q_frac_t]
+                        sv.perc_t = [q_frac]
                         sv.perc_tp = [q_frac]
                             
                     logger.info(f'iv: {iv}, q_frac: {q_frac}')
