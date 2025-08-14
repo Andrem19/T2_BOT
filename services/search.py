@@ -108,9 +108,9 @@ async def search(which_pos_we_need: str):
                     ask_indicator = tools.option_ask_indicator(left_to_exp, strike, last_price, ask, mode, rel_atr)
 
                     
-                    q_frac_raw = iv_to_q(iv, left_to_exp)
+                    q_frac = iv_to_q(iv, left_to_exp)
 
-                    q_frac = max(min(q_frac_raw, 0.012), 0.008)
+                    # q_frac = max(min(q_frac_raw, 0.012), 0.008)
 
 
                     diff = 0
