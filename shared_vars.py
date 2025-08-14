@@ -254,7 +254,7 @@ data_path_btc = "../MARKET_DATA/_crypto_data/BTCUSDT/BTCUSDT_1m.csv"
 
 day_opt = 0
 exp_rel = {
-    8: 4.4,
+    8: 4.0,
     9: 4.5,
     10: 4.5,
     11: 4.7,

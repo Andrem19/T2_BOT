@@ -98,9 +98,9 @@ async def main():
                 distance = serv.get_distance(best_simulation['name'], left_to_exp, which_pos_we_need)
                 expect = serv.get_expect(sv.actual_bd, which_pos_we_need, best_simulation['name'])
                 
-                logger.info(f'current_price check: {candels[-1][4]}')
+
                 if best_simulation['pnl'] >= expect and best_simulation['strike_perc']<= distance:
-                    if h == 8 and minute in [56, 57, 58, 59] and candels[-6][4]*1.005 < candels[-1][4]:
+                    if h == 8 and minute in [56, 57, 58, 59] and candels[-7][4]*1.005 < candels[-1][4]:
                         opt_is_open = await open_opt.open_opt(best_simulation, which_pos_we_need)
                         if opt_is_open:
                             fut_is_open = await open_fut.open_futures(best_simulation, which_pos_we_need)
