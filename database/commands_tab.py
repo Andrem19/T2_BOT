@@ -24,12 +24,12 @@ class Commands(BaseModel):
     btc: bool = False
     eth: bool = True
     sol: bool = False
-    aloud_only: str = 'ALL'
+    aloud_only: str = 'OALL'
     
     @classmethod
     def set_aloud_only(cls, value: str) :
         inst = cls.get_instance()
-        inst.aloud_only = value.upper()
+        inst.aloud_only = 'O' + value.upper()
         inst.save()
         return inst
 

@@ -343,9 +343,9 @@ def auto_set_expect(h):
     
 def get_best():
     try:
-        if sv.actual_bd.aloud_only == 'ALL':
+        if sv.actual_bd.aloud_only == 'OALL':
             return sv.stages['simulation']['position_1']
-        elif sv.actual_bd.aloud_only == 'PUT':
+        elif sv.actual_bd.aloud_only == 'OPUT':
             if sv.stages['simulation']['position_1']['type'].lower() =='put':
                 return sv.stages['simulation']['position_1']
             elif sv.stages['simulation']['position_2']['type'].lower() =='put':
@@ -354,7 +354,7 @@ def get_best():
                 return sv.stages['simulation']['position_3']
             else:
                 return None
-        elif sv.actual_bd.aloud_only == 'CALL':
+        elif sv.actual_bd.aloud_only == 'OCALL':
             if sv.stages['simulation']['position_1']['type'].lower() =='call':
                 return sv.stages['simulation']['position_1']
             elif sv.stages['simulation']['position_2']['type'].lower() =='call':
