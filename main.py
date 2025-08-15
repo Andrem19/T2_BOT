@@ -89,7 +89,6 @@ async def main():
                 await search.search(which_pos_we_need)
             
             #===========OPEN POSITION==============
-            best_simulation = serv.get_best()
 
             if which_pos_we_need != 'nothing' and h not in [4,5,6]:
                 
