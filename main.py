@@ -90,7 +90,7 @@ async def main():
             
             #===========OPEN POSITION==============
             best_simulation = serv.get_best()
-            logger.info(f'BEST SIM:\n{best_simulation}')
+
             if which_pos_we_need != 'nothing' and h not in [4,5,6]:
                 
                 left_to_exp = serv.hours_until_next_8utc()
