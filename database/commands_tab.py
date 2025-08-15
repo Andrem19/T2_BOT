@@ -17,7 +17,8 @@ class Commands(BaseModel):
     process_id: int = 0
     man_pid: int = 0
     simulation: bool = True
-    fut_perc: float = 0.8
+    fut_perc_c: float = 0.5
+    fut_perc_p: float = 0.5
     day_opt: int = 0
     call: bool = False
     put: bool = True
@@ -25,6 +26,20 @@ class Commands(BaseModel):
     eth: bool = True
     sol: bool = False
     aloud_only: int = 0
+
+    @classmethod
+    def set_fut_perc_c(cls, value: float):
+        inst = cls.get_instance()
+        inst.fut_perc_c = value
+        inst.save()
+        return inst 
+
+    @classmethod
+    def set_fut_perc_p(cls, value: float):
+        inst = cls.get_instance()
+        inst.fut_perc_p = value
+        inst.save()
+        return inst 
     
     @classmethod
     def set_aloud_only(cls, value: str) :
@@ -155,15 +170,6 @@ class Commands(BaseModel):
         inst.save()
         return inst
     
-    @classmethod
-    def set_fut_perc(cls, value: float):
-        inst = cls.get_instance()
-        inst.fut_perc = value
-        inst.save()
-        return inst 
-    
-
-
     @classmethod
     def set_timer(cls, value: int):
         inst = cls.get_instance()

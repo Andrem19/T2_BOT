@@ -66,7 +66,8 @@ async def refresh_commands_from_bd():
         com = Commands.get_instance()
         sv.stages['first']['amount'] = com.amount_1
         sv.stages['second']['amount'] = com.amount_2
-        sv.stages['simulation']['fut_perc'] = com.fut_perc
+        sv.stages['simulation']['fut_perc_c'] = com.fut_perc_c
+        sv.stages['simulation']['fut_perc_p'] = com.fut_perc_p
         sv.timer_msg = com.timer
         sv.close_1 = com.close_1
         sv.close_2 = com.close_2

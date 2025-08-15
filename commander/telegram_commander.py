@@ -66,10 +66,13 @@ async def types(type_P_C: str, flag_0_1: str):
     except Exception as e:
         print(e)
     
-async def futperc(val: str) -> None:
+async def futperc(val: str, C_P: str) -> None:
     try:
-        Commands.set_fut_perc(float(val))
-        await tel.send_inform_message("COLLECTOR_API", f"New fut_perc: {val}", "", False)
+        if C_P.lower() == 'c':
+            Commands.set_fut_perc_c(float(val))
+        else:
+            Commands.set_fut_perc_p(float(val))
+        await tel.send_inform_message("COLLECTOR_API", f"New fut_perc_{C_P.lower()}: {val}", "", False)
     except Exception as e:
         print(e)
     
