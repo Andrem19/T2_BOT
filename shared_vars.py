@@ -1,6 +1,7 @@
 from commander.com import Commander
 from logging.handlers import TimedRotatingFileHandler
 import logging, sys
+from database.commands_tab import Commands
 
 commander: Commander = None
 START_DATE  = "01-01-2024"
@@ -126,7 +127,7 @@ stages = {
     }
 }
 
-actual_bd = None
+actual_bd: Commands = None
 
 
     #[{'symbol': 'SOL-16JUL25-155-P-USDT', 'leverage': '', 'autoAddMargin': 0, 'avgPrice': '0.28', 'liqPrice': '', 

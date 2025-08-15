@@ -24,6 +24,14 @@ class Commands(BaseModel):
     btc: bool = False
     eth: bool = True
     sol: bool = False
+    aloud_only: str = 'ALL'
+    
+    @classmethod
+    def set_aloud_only(cls, value: str) :
+        inst = cls.get_instance()
+        inst.aloud_only = value.upper()
+        inst.save()
+        return inst
 
     @classmethod
     def set_expect_1(cls, value: float, symbol: str):

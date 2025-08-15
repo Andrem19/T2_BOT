@@ -32,6 +32,13 @@ from commander.service import format_trades_report, tail_log
 # ---------------------------------------------------------------------------
 
 
+async def aloud_mode(val: str):
+    try:
+        Commands.set_aloud_only(val)
+        await tel.send_inform_message("COLLECTOR_API", f"aloud_only: {val}", "", False)
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
+
 
 async def amount(cont: str, pos) -> None:
     try:
@@ -227,6 +234,7 @@ def init_commander():
     sv.commander.add_command(["pids"], get_pids)
     sv.commander.add_command(["com"], commands_db)
     sv.commander.add_command(["types"], types)
+    sv.commander.add_command(["mode"], aloud_mode)
     sv.commander.add_command(["tail"], tail)
     sv.commander.add_command(["day"], day)
     sv.commander.add_command(["hist"], trade_hist)
