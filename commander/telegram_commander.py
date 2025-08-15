@@ -34,7 +34,8 @@ from commander.service import format_trades_report, tail_log
 
 async def aloud_mode(val: str):
     try:
-        Commands.set_aloud_only(val)
+        mode = 0 if val.lower() == 'all' else 1 if val.lower() == 'put' else 2
+        Commands.set_aloud_only(mode)
         await tel.send_inform_message("COLLECTOR_API", f"aloud_only: {val}", "", False)
     except Exception as e:
         await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
