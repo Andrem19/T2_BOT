@@ -347,6 +347,8 @@ def get_best():
     try:
         if sv.actual_bd.aloud_only == 0:
             return sv.stages['simulation']['position_1']
+        elif sv.actual_bd.aloud_only == 3:
+            return None
         elif sv.actual_bd.aloud_only == 1:
             if sv.stages['simulation']['position_1']['type'].lower() =='put':
                 return sv.stages['simulation']['position_1']

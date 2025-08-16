@@ -41,7 +41,7 @@ async def exp_cor(val: str):
 
 async def aloud_mode(val: str):
     try:
-        mode = 0 if val.lower() == 'all' else 1 if val.lower() == 'put' else 2
+        mode = 0 if val.lower() == 'all' else 1 if val.lower() == 'put' else 2 if val.lower() == 'call' else 3
         Commands.set_aloud_only(mode)
         await tel.send_inform_message("COLLECTOR_API", f"aloud_only: {val}", "", False)
     except Exception as e:
