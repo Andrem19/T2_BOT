@@ -596,4 +596,4 @@ def iv_index(askPx, strike, curent_px, iv, hours_to_exp):
     p1 = iv/(abs(curent_px-strike)/curent_px) #iv за dist >
     ask_rel = askPx/curent_px
     ia1 = iv/ask_rel #iv за askPx >
-    return i1*p1*ia1*100
+    return i1*p1*ia1*0.1
