@@ -154,7 +154,7 @@ async def search(which_pos_we_need: str):
                                 print(e)
                                 continue
                             
-                            logger.info(f'NEW HEDGE: {symbol}\n{res}')
+                            logger.info(f'NEW HEDGE_2: {symbol}\n{res}')
                             
                             opt_qty['ask'] = ask*v['kof']
                             opt_qty['p_t'] = p_t
