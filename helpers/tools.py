@@ -589,3 +589,7 @@ def dict_to_pretty_string(data: dict, indent: int = 0) -> str:
             display_value = round(value, 4) if isinstance(value, float) else value
             lines.append(f"{prefix}{key}: {display_value}")
     return "\n".join(lines)
+
+
+def iv_index(askPx, strike, curent_px, iv, hours_to_exp):
+    return (((askPx/(abs(curent_px-strike)/curent_px))/hours_to_exp)/iv)*1000

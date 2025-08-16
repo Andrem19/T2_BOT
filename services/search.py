@@ -105,6 +105,7 @@ async def search(which_pos_we_need: str):
                     ask = float(o['askPrice'])
                     mode = o['optionsType'].lower()
                     index_put = tools.index(ask,strike, left_to_exp, current_px, opt_type=mode)
+                    iv_index = tools.iv_index(ask, strike, current_px, iv, left_to_exp)
                     ask_indicator = tools.option_ask_indicator(left_to_exp, strike, last_price, ask, mode, rel_atr)
 
                     q_frac = iv_to_q(iv, left_to_exp)
@@ -162,7 +163,7 @@ async def search(which_pos_we_need: str):
                             if pnl > best_position['pnl']:
                                 best_position['type'] = mode
                                 best_position['qty'] = opt_qty['qty']
-                                best_position['ask_indicators'] = [round(index_put, 2), round(ask_indicator, 2)]
+                                best_position['ask_indicators'] = [round(iv_index, 6), round(ask_indicator, 2)]
                                 best_position['name'] = symbol[:3]
                                 best_position['symbol'] = symbol
                                 best_position['strike_perc'] = diff
