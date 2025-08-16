@@ -140,6 +140,7 @@ async def search(which_pos_we_need: str):
                                 'upper_perc': tp_pct,
                                 'hours': left_to_exp,
                                 'mode': mode,
+                                'kof': v['kof']
                             }
                             try:
                                 if mode == 'put':

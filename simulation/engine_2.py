@@ -9,6 +9,7 @@ def simulation(data, i, fut_calc, params, end_idx):
         down_pnl  = float(fut_calc['pnl_lower'])
         up_pnl    = float(fut_calc['pnl_upper'])
         qty       = float(fut_calc['qty'])
+        opt_qty = params['kof']
         
         strike = 0
         mode = params['mode'].lower()
@@ -98,12 +99,12 @@ def simulation(data, i, fut_calc, params, end_idx):
             if close_price>middle_2:
                 pnl_opt = -ask_cost
             else:
-                pnl_opt = (middle_2-close_price)*0.01
+                pnl_opt = (middle_2-close_price)*opt_qty
         else:
             if close_price<middle_2:
                 pnl_opt = -ask_cost
             else:
-                pnl_opt = (close_price-middle_2)*0.01            
+                pnl_opt = (close_price-middle_2)*opt_qty       
         pnl = pnl_opt+pnl_fut
         result = {
             "start_timestamp_ms": start,
