@@ -155,7 +155,6 @@ async def search(which_pos_we_need: str):
                             opt_qty['ask'] = ask*v['kof']
                             opt_qty['p_t'] = p_t
                             
-                            
                             stat, pnl, n = simulation(v['data'], opt_qty, params)
                             # logger.info(stat)
                             logger.info(f'mode-symb: {mode}-{symbol[:3]} over: {diff} best_pnl: {pnl}')
@@ -179,8 +178,6 @@ async def search(which_pos_we_need: str):
                                 best_position['q_frac'] = q_frac
                                 best_position['pnl'] = pnl
                                 define_sim_pos(copy.deepcopy(best_position))
-                                
-                    
                 except Exception as e:
                     logger.exception(f'SEARCH INNER LOOP ERROR: {e}\n\n{traceback.format_exc()}')
         await read_and_update_current_utc_hour(sv.stages['simulation']['position_1'])
