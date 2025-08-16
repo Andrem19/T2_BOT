@@ -142,8 +142,6 @@ async def search(which_pos_we_need: str):
                                 'mode': mode,
                             }
                             try:
-                                opt_type = 'P' if mode == 'put' else 'C'
-                                res = tools.compute_hedged_breaks_and_targets(current_px, strike, opt_type, ask*v['kof'], 5)
                                 if mode == 'put':
                                     fut_perc = sv.stages['simulation'].get('fut_perc_p', 0.80)
                                     opt_qty = tools.calc_futures_qty(take_profit, target, current_px, ask*v['kof'], (targ_bid-ask)*v['kof'], mode, share_target=fut_perc)
@@ -153,8 +151,6 @@ async def search(which_pos_we_need: str):
                             except Exception as e:
                                 print(e)
                                 continue
-                            
-                            logger.info(f'NEW HEDGE_2: {symbol}\n{res}')
                             
                             opt_qty['ask'] = ask*v['kof']
                             opt_qty['p_t'] = p_t

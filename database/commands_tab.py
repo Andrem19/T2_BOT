@@ -26,6 +26,14 @@ class Commands(BaseModel):
     eth: bool = True
     sol: bool = False
     aloud_only: int = 0
+    exp_korrect: float = -2.0
+
+    @classmethod
+    def set_exp_kor(cls, value: float):
+        inst = cls.get_instance()
+        inst.exp_korrect = value
+        inst.save()
+        return inst 
 
     @classmethod
     def set_fut_perc_c(cls, value: float):

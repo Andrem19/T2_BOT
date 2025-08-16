@@ -50,8 +50,6 @@ async def main():
     #=========CHECK POSITIONS===========
     position_1 = HL.get_position(account_idx=1)
     position_2 = HL.get_position(account_idx=2)
-    Commands.set_close_1(False)
-    Commands.set_close_2(False)
     commands = Commands.get_instance()
     logger.info('Commands: %s', commands)
 
