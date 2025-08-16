@@ -92,7 +92,7 @@ def simulation(data, i, fut_calc, params, end_idx):
             pnl = down_pnl
         
         
-        pnl_fut = (close_price-open_price)*qty
+        pnl_fut = (close_price-open_price)*qty if mode == 'put' else (open_price-close_price)*qty
         pnl_opt = 0
         if mode == 'put':
             if close_price>strike:
