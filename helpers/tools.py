@@ -592,4 +592,4 @@ def dict_to_pretty_string(data: dict, indent: int = 0) -> str:
 
 
 def iv_index(askPx, strike, curent_px, iv, hours_to_exp):
-    return (((askPx/(abs(curent_px-strike)/curent_px))/hours_to_exp)/iv)*1000
+    return (((askPx/(abs(curent_px-strike)/curent_px))/hours_to_exp)/iv)*0.001
