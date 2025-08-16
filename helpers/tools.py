@@ -589,3 +589,104 @@ def dict_to_pretty_string(data: dict, indent: int = 0) -> str:
             display_value = round(value, 4) if isinstance(value, float) else value
             lines.append(f"{prefix}{key}: {display_value}")
     return "\n".join(lines)
+
+
+from typing import Dict
+
+def compute_hedged_breaks_and_targets(
+    S0: float,
+    K: float,
+    opt_type: str,      # 'C' или 'P' (опцион OTM: для C K>S0, для P K<S0)
+    askPrice: float,    # премия опциона за 1 контракт (в тех же денежных единицах, что и S0)
+    minProfit: float    # целевая прибыль в тех же единицах (>=0)
+) -> Dict[str, float]:
+    """
+    Подбор фьючерса к OTM-опциону, чтобы:
+      1) одновременно существовали ближайшие точки вверх и вниз, где суммарный PnL > 0,
+      2) максимальное из этих двух расстояний было минимально (минимакс),
+      3) вернуть также расстояния до уровней, где PnL == minProfit.
+
+    Модель:
+      PnL_total(S) = payoff_option(S) - askPrice + Qty * (S - S0),
+      где Qty — КОЛИЧЕСТВО ФЬЮЧЕРСОВ на 1 опционный контракт
+      (знак по условию: для Put лонг => Qty>0; для Call шорт => Qty<0).
+
+    Результат (словарь):
+      - 'Qty'               : оптимальное количество фьючерса (на 1 опционный контракт).
+      - 'Min_up_perc'       : минимальный %-сдвиг вверх от S0 до первой точки PnL>0 (доля, 0.01 = 1%).
+      - 'Min_down_perc'     : минимальный %-сдвиг вниз от S0 до первой точки PnL>0 (доля).
+      - 'min_prof_up_dist'  : абсолютная дистанция вверх (в цене), где PnL == minProfit.
+      - 'min_down_prof_dist': абсолютная дистанция вниз (в цене), где PnL == minProfit.
+
+    Важные детали:
+      - В оптимуме расстояния до первого положительного результата сверху и снизу равны и
+        равны: d* = |K - S0| + 2*askPrice.
+      - Для Call оптимальный Qty = - askPrice / ( (K - S0) + 2*askPrice ), т.к. K>S0.
+        Для Put  оптимальный Qty = + askPrice / ( (S0 - K) + 2*askPrice ), т.к. K<S0.
+      - Расстояния до PnL == minProfit выражаются через тот же Qty.
+
+    Все величины — в единицах цены базового актива и тех же денежных единицах.
+    """
+
+    # --- проверки ввода ---
+    if S0 <= 0 or K <= 0:
+        raise ValueError("S0 и K должны быть положительными.")
+    if askPrice <= 0:
+        raise ValueError("askPrice должен быть > 0.")
+    if minProfit < 0:
+        raise ValueError("minProfit должен быть >= 0.")
+
+    t = opt_type.upper()
+    if t not in ("C", "P"):
+        raise ValueError("opt_type должен быть 'C' или 'P'.")
+
+    # --- геометрия «вне денег» ---
+    if t == "C":
+        if not (K > S0):
+            raise ValueError("Для Call требуется OTM: K > S0.")
+        gap = K - S0  # сколько «вне денег»
+        qty_abs = askPrice / (gap + 2.0 * askPrice)
+        Qty = -qty_abs  # шорт фьючерса для Call
+        d_star = gap + 2.0 * askPrice  # минимальные расстояния вверх/вниз (они равны в оптимуме)
+
+        # % расстояния до первой точки PnL>0
+        min_up_perc = d_star / S0
+        min_down_perc = d_star / S0
+
+        # Расстояния до PnL == minProfit
+        # ВВЕРХ (после пересечения K): P = -ask - gap + d*(1 + Qty) = minProfit
+        # => d_up = (minProfit + askPrice + gap) / (1 + Qty)
+        d_up_target = (minProfit + askPrice + gap) / (1.0 + Qty)
+
+        # ВНИЗ (ниже S0, payoff опции = 0): P = -ask + Qty*(-d) = minProfit
+        # => d_down = (minProfit + askPrice) / (-Qty)
+        d_down_target = (minProfit + askPrice) / (-Qty)
+
+    else:  # t == 'P'
+        if not (K < S0):
+            raise ValueError("Для Put требуется OTM: K < S0.")
+        gap = S0 - K  # сколько «вне денег»
+        qty_abs = askPrice / (gap + 2.0 * askPrice)
+        Qty = +qty_abs  # лонг фьючерса для Put
+        d_star = gap + 2.0 * askPrice  # минимальные расстояния вверх/вниз (они равны в оптимуме)
+
+        # % расстояния до первой точки PnL>0
+        min_up_perc = d_star / S0
+        min_down_perc = d_star / S0
+
+        # Расстояния до PnL == minProfit
+        # ВВЕРХ (выше S0, payoff опции = 0): P = -ask + Qty*d = minProfit
+        # => d_up = (minProfit + askPrice) / Qty
+        d_up_target = (minProfit + askPrice) / Qty
+
+        # ВНИЗ (ниже K): P = -ask - gap + d*(1 - Qty) = minProfit
+        # => d_down = (minProfit + askPrice + gap) / (1 - Qty)
+        d_down_target = (minProfit + askPrice + gap) / (1.0 - Qty)
+
+    return {
+        "Qty": Qty,
+        "Min_up_perc": min_up_perc,
+        "Min_down_perc": min_down_perc,
+        "min_prof_up_dist": d_up_target,
+        "min_down_prof_dist": d_down_target,
+    }
