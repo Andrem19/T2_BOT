@@ -95,15 +95,15 @@ def simulation(data, i, fut_calc, params, end_idx):
         pnl_fut = (close_price-open_price)*qty if mode == 'put' else (open_price-close_price)*qty
         pnl_opt = 0
         if mode == 'put':
-            if close_price>strike:
+            if close_price>middle_2:
                 pnl_opt = -ask_cost
             else:
-                pnl_opt = (strike-close_price)*0.01
+                pnl_opt = (middle_2-close_price)*0.01
         else:
-            if close_price<strike:
+            if close_price<middle_2:
                 pnl_opt = -ask_cost
             else:
-                pnl_opt = (close_price-strike)*0.01            
+                pnl_opt = (close_price-middle_2)*0.01            
         pnl = pnl_opt+pnl_fut
         result = {
             "start_timestamp_ms": start,
