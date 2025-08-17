@@ -93,6 +93,8 @@ async def open_futures(position: dict, which_pos_we_need: str):
 
 async def second_stage_check(which_pos_we_need: str):
     try:
+        if sv.stages[which_pos_we_need]['position']['second_taken']:
+            return
         acc = 2 if which_pos_we_need =='first' else 1
         symbol = sv.stages[which_pos_we_need]['base_coin'] + 'USDT'
         size = sv.stages[which_pos_we_need]['position']['position_info']['size']
