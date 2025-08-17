@@ -87,6 +87,10 @@ async def refresh_commands_from_bd():
         if com.call:
             opt_types.append('call')
         sv.opt_types = opt_types
+        
+        sv.stages['first']['expect'] = com.expect_1_btc
+
+        sv.stages['second']['expect'] = com.expect_2_btc
         return com
     except Exception as e:
         logger.exception(e)
