@@ -188,7 +188,7 @@ class Simulation(BaseModel):
 
         period_hours_0 = cls._current_period_hours_0_based(hour0)
         if not period_hours_0:
-            return {"pnl": None, "dist": None}
+            return {"pnl": None, "dist": 0}
 
         sims = cls.last_days(days, until=now_utc)
 
@@ -196,7 +196,6 @@ class Simulation(BaseModel):
         day_avgs: List[Tuple[float, float]] = []
         for sim in sims:
             sum_pnl = 0.0
-            sum_dist = 0.0
             cnt = 0
             for h in period_hours_0:
                 v = sim.get_hour(h)
@@ -204,21 +203,18 @@ class Simulation(BaseModel):
                     continue
                 try:
                     pnl = float(v.get("pnl"))
-                    dist = float(v.get("dist"))
                 except (TypeError, ValueError):
                     continue
                 sum_pnl += pnl
-                sum_dist += dist
                 cnt += 1
             if cnt > 0:
-                day_avgs.append((sum_pnl / cnt, sum_dist / cnt))
+                day_avgs.append((sum_pnl / cnt))
 
         if not day_avgs:
             return {"pnl": None, "dist": None}
 
         avg_pnl = sum(p for p, _ in day_avgs) / len(day_avgs)
-        avg_dist = sum(d for _, d in day_avgs) / len(day_avgs)
-        return {"pnl": avg_pnl, "dist": avg_dist}
+        return {"pnl": avg_pnl, "dist": 0}
 
     # ----------------------- ВНУТРЕННИЕ ХЕЛПЕРЫ -----------------------
 
