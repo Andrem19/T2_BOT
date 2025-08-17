@@ -85,28 +85,31 @@ async def open_futures(position: dict, which_pos_we_need: str):
         return False
 
 async def second_stage_check(which_pos_we_need: str):
-    acc = 2 if which_pos_we_need =='first' else 1
-    symbol = sv.stages[which_pos_we_need]['base_coin'] + 'USDT'
-    size = sv.stages[which_pos_we_need]['position']['position_info']['size']
-    entryPx = sv.stages[which_pos_we_need]['position']['position_info']['entryPx']
-    current_px = PriceCache.get(symbol)
-    
-    side=''
-    need_to_add = False
-    lower_perc = sv.stages[which_pos_we_need]['lower_perc']
-    upper_perc = sv.stages[which_pos_we_need]['upper_perc']
-    if size > 0:
-        need_dist = lower_perc*0.40
-        side = 'Buy'
-        need_to_add = current_px < entryPx and abs((current_px-entryPx)/current_px) > need_dist
-    else:
-        need_dist = upper_perc*0.40
-        side = 'Sell'
-        need_to_add = current_px > entryPx and abs((current_px-entryPx)/current_px) > need_dist
+    try:
+        acc = 2 if which_pos_we_need =='first' else 1
+        symbol = sv.stages[which_pos_we_need]['base_coin'] + 'USDT'
+        size = sv.stages[which_pos_we_need]['position']['position_info']['size']
+        entryPx = sv.stages[which_pos_we_need]['position']['position_info']['entryPx']
+        current_px = PriceCache.get(symbol)
         
-    if need_to_add:
-        await open_fut_sec(which_pos_we_need, symbol, size, acc, side, lower_perc, upper_perc, entryPx)
-        sv.stages[which_pos_we_need]['position']['second_taken'] = True
+        side=''
+        need_to_add = False
+        lower_perc = sv.stages[which_pos_we_need]['lower_perc']
+        upper_perc = sv.stages[which_pos_we_need]['upper_perc']
+        if size > 0:
+            need_dist = lower_perc*0.40
+            side = 'Buy'
+            need_to_add = current_px < entryPx and abs((current_px-entryPx)/current_px) > need_dist
+        else:
+            need_dist = upper_perc*0.40
+            side = 'Sell'
+            need_to_add = current_px > entryPx and abs((current_px-entryPx)/current_px) > need_dist
+            
+        if need_to_add:
+            await open_fut_sec(which_pos_we_need, symbol, size, acc, side, lower_perc, upper_perc, entryPx)
+            sv.stages[which_pos_we_need]['position']['second_taken'] = True
+    except Exception as e:
+        await safe_send("TELEGRAM_API", f'second_stage_check ERROR: {e}', '', False)
         
         
         
