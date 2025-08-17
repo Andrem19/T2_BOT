@@ -211,9 +211,9 @@ class Simulation(BaseModel):
                 day_avgs.append((sum_pnl / cnt))
 
         if not day_avgs:
-            return {"pnl": None, "dist": None}
+            return {"pnl": None, "dist": 0}
 
-        avg_pnl = sum(p for p, _ in day_avgs) / len(day_avgs)
+        avg_pnl = sum(p for p in day_avgs) / len(day_avgs)
         return {"pnl": avg_pnl, "dist": 0}
 
     # ----------------------- ВНУТРЕННИЕ ХЕЛПЕРЫ -----------------------
