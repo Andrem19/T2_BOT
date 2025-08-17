@@ -24,7 +24,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
         sv.stages[which_pos_we_need]['position']['pnl_target'] = (position['pnl_upper']*0.95)*sv.stages[which_pos_we_need]['amount']
         new_position = {}
         
-        fut_amt = (position['qty']*sv.stages[which_pos_we_need]['amount'])/2
+        fut_amt = (position['qty']*sv.stages[which_pos_we_need]['amount'])*0.5
         
         side = 'Buy' if position['type'] == 'put' else 'Sell'
         HL.open_market_order(symbol, side, 0, False, fut_amt, acc)
