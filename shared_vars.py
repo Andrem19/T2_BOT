@@ -56,6 +56,7 @@ stages = {
         'rel_atr': 0.08,
         'rsi': 55.4,
         'position': {
+            'second_taken': False,
             'open_time': '',
             'exist': False,
             'pnl_target': 0,
@@ -97,6 +98,7 @@ stages = {
         'rel_atr': 0.08,
         'rsi': 55.4,
         'position': {
+            'second_taken': False,
             'open_time': '',
             'exist': False,
             'pnl_target': 0,

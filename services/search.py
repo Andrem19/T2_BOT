@@ -62,7 +62,7 @@ async def search(which_pos_we_need: str):
             
             h = datetime.now(timezone.utc).hour
             
-            day_opt = sv.day_opt if h >= 0 and h < 7 else sv.day_opt+1
+            day_opt = sv.day_opt if h >= 0 and h < 6 else sv.day_opt+1
             opt_day_1, _ = tools.get_next_friday_day(day_opt)
 
             

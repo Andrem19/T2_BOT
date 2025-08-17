@@ -320,18 +320,20 @@ def get_expect(com: Commands, which_pos_we_need: str = 'second', symbol: str = '
     expect = 10000
     if which_pos_we_need == 'first':
         if symbol == 'BTC':
-            expect = com.expect_1_btc
+            sv.stages['first']['expect'] = com.expect_1_btc
         elif symbol == 'ETH':
-            expect = com.expect_1_eth
+            sv.stages['first']['expect'] = com.expect_1_eth
         elif symbol == 'SOL':
-            expect = com.expect_1_sol
+            sv.stages['first']['expect'] = com.expect_1_sol
+        expect = sv.stages['first']['expect']
     elif which_pos_we_need == 'second':
         if symbol == 'BTC':
-            expect = com.expect_2_btc
+            sv.stages['second']['expect'] = com.expect_2_btc
         elif symbol == 'ETH':
-            expect = com.expect_2_eth
+            sv.stages['second']['expect'] = com.expect_2_eth
         elif symbol == 'SOL':
-            expect = com.expect_2_sol
+            sv.stages['second']['expect'] = com.expect_2_sol
+        expect = sv.stages['second']['expect']
     return expect
 
 def auto_set_expect(h):

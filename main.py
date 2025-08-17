@@ -73,11 +73,9 @@ async def main():
     while True:
         try:
             #======COMMANDS==========
-            candels = CandleCache.get('BTCUSDT', 60)
             dt = datetime.now(timezone.utc)
             h = dt.hour
-            minute = dt.minute
-            serv.auto_set_expect(h)         
+            weekday = dt.weekday()  
             sv.actual_bd = await serv.refresh_commands_from_bd()
             
             #===========CALCULATION================
@@ -88,7 +86,7 @@ async def main():
             
             #===========OPEN POSITION==============
 
-            if which_pos_we_need != 'nothing' and h not in [4,5,6]:
+            if which_pos_we_need != 'nothing' and h in [6, 7, 12, 13, 23, 0] and weekday not in [5,6]:
                 
                 left_to_exp = serv.hours_until_next_8utc()
                 best_simulation = serv.get_best()
@@ -100,7 +98,6 @@ async def main():
                     
 
                     if best_simulation['pnl'] >= expect and best_simulation['strike_perc']<= distance:
-                        # if h == 8 and minute in [56, 57, 58, 59] and candels[-7][4]*1.005 < candels[-1][4]:
                         opt_is_open = await open_opt.open_opt(best_simulation, which_pos_we_need)
                         if opt_is_open:
                             fut_is_open = await open_fut.open_futures(best_simulation, which_pos_we_need)
@@ -123,10 +120,12 @@ async def main():
             if sv.stages['second']['exist']:
                 last_pr = PriceCache.get(sv.stages['second']['base_coin'] + 'USDT')
                 _ = await monitoring.process_position(last_pr, 'second')
+                await open_fut.second_stage_check('second')
                 
             if sv.stages['first']['exist']:
                 last_pr = PriceCache.get(sv.stages['first']['base_coin'] + 'USDT')
                 _ = await monitoring.process_position(last_pr, 'first')
+                await open_fut.second_stage_check('first')
 
             if sv.stages['second']['exist'] or sv.stages['first']['exist']:
                 ensure_option_feed_alive()
