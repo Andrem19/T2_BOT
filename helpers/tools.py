@@ -597,3 +597,32 @@ def iv_index(askPx, strike, curent_px, iv, hours_to_exp):
     ask_rel = askPx/curent_px
     ia1 = iv/ask_rel #iv за askPx >
     return i1*p1*ia1*0.1
+
+def qty_for_target_profit(current_price: float, take_profit: float, target_profit: float) -> float:
+    """
+    Возвращает абсолютное количество (Qty) базового актива для линейного фьючерса,
+    чтобы при движении цены на take_profit (доля, например 0.01 = 1%)
+    прибыль составила target_profit (в котируемой валюте, например USDT).
+
+    Работает одинаково для лонга и шорта. Направление позиции определяется тем,
+    где расположен ваш TP относительно текущей цены (выше — лонг, ниже — шорт),
+    но функция возвращает только |Qty|.
+
+    Параметры:
+      current_price > 0
+      take_profit   > 0  (доля, а не проценты)
+      target_profit > 0
+
+    Пример:
+      current_price=10_000, take_profit=0.01, target_profit=250  -> Qty = 2.5
+    """
+    if current_price <= 0:
+        raise ValueError("current_price должен быть > 0")
+    if take_profit <= 0:
+        raise ValueError("take_profit должен быть > 0 (например, 0.01 для 1%)")
+    if target_profit <= 0:
+        raise ValueError("target_profit должен быть > 0")
+
+    delta_per_unit = current_price * take_profit      # |изменение цены| на 1 единицу базового
+    qty = target_profit / delta_per_unit              # требуемое количество по модулю
+    return float(qty)

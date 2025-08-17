@@ -43,7 +43,9 @@ perc_tp = [0.02, 0.025, 0.03, 0.04]
 
 
 async def main():
-    res = HL.open_TP('BTCUSDT', 'Sell', 0.00366, 119826, 0.02)
+    # res = HL.open_TP('BTCUSDT', 'Sell', 0.00366, 119826, 0.02)
+    # print(res)
+    res = tools.qty_for_target_profit(120000, 0.01, 4)
     print(res)
     # h = datetime.now(timezone.utc).hour
     # print(h)
