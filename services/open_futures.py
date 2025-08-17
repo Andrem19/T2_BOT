@@ -96,16 +96,15 @@ async def second_stage_check(which_pos_we_need: str):
     lower_perc = sv.stages[which_pos_we_need]['lower_perc']
     upper_perc = sv.stages[which_pos_we_need]['upper_perc']
     if size > 0:
-        need_dist = lower_perc*0.4
+        need_dist = lower_perc*0.40
         side = 'Buy'
         need_to_add = current_px < entryPx and abs((current_px-entryPx)/current_px) > need_dist
     else:
-        need_dist = upper_perc*0.4
+        need_dist = upper_perc*0.40
         side = 'Sell'
         need_to_add = current_px > entryPx and abs((current_px-entryPx)/current_px) > need_dist
         
     if need_to_add:
-        HL.cancel_all_orders()
         await open_fut_sec(which_pos_we_need, symbol, size, acc, side, lower_perc, upper_perc, entryPx)
         sv.stages[which_pos_we_need]['position']['second_taken'] = True
         
@@ -134,6 +133,8 @@ async def open_fut_sec(which_pos_we_need, symbol, size, acc, side, lower_perc, u
                     await asyncio.sleep(4)
         
         if new_position and abs(new_position.get('size', 0)) > 0:
+            HL.cancel_all_orders()
+            await asyncio.sleep(1)
             logger.info(f"Futures position {symbol} - {size} opened.")
             sv.stages[which_pos_we_need]['position']['position_info'] = new_position
             
