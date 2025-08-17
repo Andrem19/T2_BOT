@@ -85,17 +85,15 @@ async def main():
                 await search.search(which_pos_we_need)
             
             #===========OPEN POSITION==============
-            logger.info(f'HOUR: {h}, WEEKDAY: {weekday}')
             if which_pos_we_need != 'nothing' and h in [5, 6, 7, 11, 12, 13, 22, 23, 0] and weekday not in [5]:
                 
                 left_to_exp = serv.hours_until_next_8utc()
                 best_simulation = serv.get_best()
-                logger.info(f'BEST SIM: {best_simulation}')
+                
                 if best_simulation:
                     
                     distance = serv.get_distance(best_simulation['name'], left_to_exp, which_pos_we_need)
                     expect = serv.get_expect(sv.actual_bd, which_pos_we_need, best_simulation['name'])
-                    logger.info(f'EXPECT: {expect} DIST: {distance}')
 
                     if best_simulation['pnl'] >= expect and best_simulation['strike_perc']<= distance:
                         opt_is_open = await open_opt.open_opt(best_simulation, which_pos_we_need)
