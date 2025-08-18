@@ -79,7 +79,7 @@ async def search(which_pos_we_need: str):
             metrics = analyze_option_slice(filtered_chain_0)
             rr25, best_opts = pic_best_opt(metrics)
             logger.info(f'BEST OPT: {best_opts}')
-            filtered_chain_0 = best_opts
+            # filtered_chain_0 = best_opts
             sv.stages['simulation']['time_to_exp'] = left_to_exp
             
             avg = Simulation.avg_for_current_period_last_days(4)
@@ -89,10 +89,10 @@ async def search(which_pos_we_need: str):
 
             distance = serv.get_distance(k, left_to_exp, which_pos_we_need)
 
-            filtered_chain_0 = tools.filter_options_by_distance(filtered_chain_0, distance)
-            logger.info(f'AFTER DISTANCE FILTER: {filtered_chain_0}')
+            best_opts = tools.filter_options_by_distance(best_opts, distance)
+            logger.info(f'AFTER DISTANCE FILTER: {best_opts}')
             amount_for_est = 1 if which_pos_we_need =='nothing' else sv.stages[which_pos_we_need]['amount']*v['kof']
-            for f in filtered_chain_0:
+            for f in best_opts:
                 try:
                     ask_raw, max_qty = BB.Estimator.smart(f['symbol'], qty=amount_for_est, buy=True)
                     ask_val = ask_raw if isinstance(ask_raw, (int, float)) else f.get("askPrice", 0)
@@ -101,7 +101,7 @@ async def search(which_pos_we_need: str):
                     f['askSize'] = float(max_qty)
                 except Exception as e:
                     logger.exception(e)
-            for o in filtered_chain_0:
+            for o in best_opts:
                 try:
                     iv = o['iv']
                     symbol = o['symbol']
