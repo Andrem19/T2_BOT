@@ -13,6 +13,7 @@ from helpers.safe_sender import safe_send
 from database.simple_orm import initialize
 import services.serv as serv
 import helpers.tlg as tlg
+from helpers.metrics import analyze_option_slice, pic_best_opt
 from database.hist_trades import Trade
 from database.simulation import Simulation
 from commander.service import format_trades_report
@@ -43,10 +44,23 @@ perc_tp = [0.02, 0.025, 0.03, 0.04]
 
 
 async def main():
+    BB.initialise()
+    chain = BB.Chain.get_chain_full(underlying='BTC', days=2, with_greeks=True) or []
+    opt_day_1, _ = tools.get_next_friday_day(1)
+    filtered_chain_0 = []
+
+    filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
+    filtered_chain_0.extend(filtered_chain_calls)
+
+    filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
+    filtered_chain_0.extend(filtered_chain_puts)
+    res = analyze_option_slice(filtered_chain_0)
+    opt = pic_best_opt(res)
+    print(opt)
     # res = HL.open_TP('BTCUSDT', 'Sell', 0.00366, 119826, 0.02)
     # print(res)
-    res = tools.qty_for_target_profit(120000, 0.01, 4)
-    print(res)
+    # res = tools.qty_for_target_profit(120000, 0.01, 4)
+    # print(res)
     # h = datetime.now(timezone.utc).hour
     # print(h)
     # BB.initialise(testnet=False)

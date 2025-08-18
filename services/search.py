@@ -9,6 +9,7 @@ import services.serv as serv
 import helpers.tools as tools
 from typing import Optional, Dict, Any
 from simulation.simulation import simulation
+from helpers.metrics import analyze_option_slice, pic_best_opt
 from database.simulation import Simulation
 import traceback
 import copy
@@ -74,13 +75,16 @@ async def search(which_pos_we_need: str):
                 filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
                 filtered_chain_0.extend(filtered_chain_puts)
 
-            
             left_to_exp = tools.time_to_expiry(filtered_chain_0[0]['deliveryTime'])
+            metrics = analyze_option_slice(filtered_chain_0)
+            rr25, best_opts = pic_best_opt(metrics)
+            filtered_chain_0 = best_opts
             sv.stages['simulation']['time_to_exp'] = left_to_exp
             
             avg = Simulation.avg_for_current_period_last_days(4)
             sv.stages['simulation']['period_avg_pnl'] = avg['pnl']
             sv.stages['simulation']['period_avg_dist'] = avg['dist']
+            sv.stages['simulation']['RR25'] = rr25
 
             distance = serv.get_distance(k, left_to_exp, which_pos_we_need)
 
