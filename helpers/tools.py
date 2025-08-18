@@ -482,7 +482,6 @@ def filter_options_by_distance(
 
         # вычисляем относительную разницу
         distance_pct = abs(strike - underlying) / underlying
-        sv.logger.info(f'{opt} - {distance_pct} - {max_distance_pct}')
 
         # оставляем только те опционы, где diff <= max_distance_pct
         if distance_pct <= max_distance_pct:
