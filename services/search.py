@@ -91,7 +91,7 @@ async def search(which_pos_we_need: str):
             else:
                 filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
                 best_opts.extend(filtered_chain_puts)                                
-            # filtered_chain_0 = best_opts
+
             sv.stages['simulation']['time_to_exp'] = left_to_exp
             
             avg = Simulation.avg_for_current_period_last_days(4)
@@ -200,14 +200,14 @@ async def search(which_pos_we_need: str):
                                 define_sim_pos(copy.deepcopy(best_position))
                 except Exception as e:
                     logger.exception(f'SEARCH INNER LOOP ERROR: {e}\n\n{traceback.format_exc()}')
-        await read_and_update_current_utc_hour(sv.stages['simulation']['position_1'])
+        await read_and_update_current_utc_hour(sv.stages['simulation']['position_1'], rr25)
         speed_sec = (datetime.now().timestamp() - start)
         logger.info(f'speed: {speed_sec}')
     except Exception as e:
         logger.exception(f'SEARCH ERROR: {e}\n\n{traceback.format_exc()}')
 
 
-async def read_and_update_current_utc_hour(new_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def read_and_update_current_utc_hour(new_payload: Dict[str, Any], rr25) -> Optional[Dict[str, Any]]:
     """
     Держим "лучшее" значение в пределах текущего UTC-часа по метрике `pnl` (максимум).
     Поведение:
@@ -223,7 +223,8 @@ async def read_and_update_current_utc_hour(new_payload: Dict[str, Any]) -> Optio
     try:
         new_payload = {
             'pnl': new_payload['pnl'],
-            'name': f"{new_payload['name']}-{new_payload['type']}"
+            'name': f"{new_payload['name']}-{new_payload['type']}",
+            'rr25': rr25
         }
         # 1) UTC-дата и час
         now_utc = datetime.now(timezone.utc)
