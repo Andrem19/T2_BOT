@@ -2,6 +2,7 @@ from datetime import datetime, timezone, timedelta, date
 from typing import Any, Dict, Tuple, List, Literal, Optional
 import math
 import bisect
+import shared_vars as sv
 
 def calc_futures_qty(
     upper_price: float,
@@ -481,6 +482,7 @@ def filter_options_by_distance(
 
         # вычисляем относительную разницу
         distance_pct = abs(strike - underlying) / underlying
+        sv.logger.info(f'{opt} - {distance_pct} - {max_distance_pct}')
 
         # оставляем только те опционы, где diff <= max_distance_pct
         if distance_pct <= max_distance_pct:
