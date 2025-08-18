@@ -335,8 +335,8 @@ def analyze_option_slice(
     best_put  = cand_puts_sorted[0]  if cand_puts_sorted  else None
 
     # ---------------------- ВОЗВРАТ TOP3_* В ПОЛНОМ ВИДЕ (ОРИГИНАЛЬНЫЕ ОБЪЕКТЫ) ----------------------
-    top3_calls_symbols = [e["symbol"] for e in cand_calls_sorted[:3]]
-    top3_puts_symbols  = [e["symbol"] for e in cand_puts_sorted[:3]]
+    top3_calls_symbols = [e["symbol"] for e in cand_calls_sorted[:4]]
+    top3_puts_symbols  = [e["symbol"] for e in cand_puts_sorted[:4]]
 
     top3_calls_full = [symbol_to_original[sym] for sym in top3_calls_symbols if sym in symbol_to_original]
     top3_puts_full  = [symbol_to_original[sym] for sym in top3_puts_symbols  if sym in symbol_to_original]
