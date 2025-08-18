@@ -140,7 +140,7 @@ async def search(which_pos_we_need: str):
                                 target = strike * (1+p_t)
                                 tp_pct, sl_pct = tools.calc_tp_sl_pct(current_px, target, take_profit)
                             
-                            logger.info(f'CALC BID: {v['bids']} {p_t}')
+                            logger.info(f'CALC BID: {v["bids"]} {p_t}')
                             targ_bid = tools.calc_bid(v['bids'], p_t)
                             params = {
                                 'lower_perc': sl_pct,
