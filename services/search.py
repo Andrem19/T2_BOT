@@ -77,8 +77,20 @@ async def search(which_pos_we_need: str):
 
             left_to_exp = tools.time_to_expiry(filtered_chain_0[0]['deliveryTime'])
             metrics = analyze_option_slice(filtered_chain_0)
-            rr25, best_opts = pic_best_opt(metrics)
-            logger.info(f'BEST OPT: {best_opts}')
+            rr25, _ = pic_best_opt(metrics)
+
+            best_opts = []
+            if rr25 < 0.01 and rr25 > -0.01:
+                filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
+                best_opts.extend(filtered_chain_calls)
+                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
+                best_opts.extend(filtered_chain_puts)
+            elif rr25 < -0.01:
+                filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
+                best_opts.extend(filtered_chain_calls)
+            else:
+                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
+                best_opts.extend(filtered_chain_puts)                                
             # filtered_chain_0 = best_opts
             sv.stages['simulation']['time_to_exp'] = left_to_exp
             
@@ -90,7 +102,7 @@ async def search(which_pos_we_need: str):
             distance = serv.get_distance(k, left_to_exp, which_pos_we_need)
 
             best_opts = tools.filter_options_by_distance(best_opts, distance)
-            logger.info(f'AFTER DISTANCE FILTER: {best_opts}')
+
             amount_for_est = 1 if which_pos_we_need =='nothing' else sv.stages[which_pos_we_need]['amount']*v['kof']
             for f in best_opts:
                 try:
