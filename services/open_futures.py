@@ -3,6 +3,7 @@ import shared_vars as sv
 from shared_vars import logger
 from helpers.safe_sender import safe_send
 import asyncio
+import services.serv as serv
 import helpers.tools as tools
 import traceback
 from helpers.price_feed import PriceCache
@@ -118,6 +119,7 @@ async def second_stage_check(which_pos_we_need: str):
             if qty>0:
                 await open_fut_sec(which_pos_we_need, symbol, qty, acc, side, lower_perc, upper_perc, entryPx)
                 sv.stages[which_pos_we_need]['position']['second_taken'] = True
+                serv.save_stages(sv.stages)
     except Exception as e:
         await safe_send("TELEGRAM_API", f'second_stage_check ERROR: {e}', '', False)
         
