@@ -383,7 +383,12 @@ def analyze_option_slice(
 
 def pic_best_opt(metrics):
     rr25 = metrics['rr25_block']['rr25']
-    if rr25 <= 0:
+    if rr25 < -0.01:
         return rr25, metrics['picks_block']['top3_calls']
-    else:
+    elif rr25>0.01:
         return rr25, metrics['picks_block']['top3_puts']
+    else:
+        all = []
+        all.extend(metrics['picks_block']['top3_calls'])
+        all.extend(metrics['picks_block']['top3_puts'])
+        return rr25, all
