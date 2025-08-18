@@ -28,7 +28,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
         side = 'Buy' if position['type'] == 'put' else 'Sell'
         tp_perc = position['upper_perc'] if side == 'Buy' else position['lower_perc']
         fut_full_amt = (position['qty']*sv.stages[which_pos_we_need]['amount'])
-        fut_amt = tools.qty_for_target_profit(currentPx, tp_perc, position['ask']*sv.stages[which_pos_we_need]['amount']*1.10)
+        fut_amt = tools.qty_for_target_profit(currentPx, tp_perc, position['ask']*sv.stages[which_pos_we_need]['amount']*1.15)
         second_stage_qty = fut_full_amt - fut_amt
         
         
