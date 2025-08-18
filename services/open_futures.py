@@ -41,7 +41,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
         
         #==============SECOND TRY================
         if not new_position:
-            HL.cancel_all_orders()
+            HL.cancel_all_orders(symbol, acc)
             await asyncio.sleep(10)
             new_position = HL.get_position(symbol, acc)
             if not new_position:
@@ -134,7 +134,7 @@ async def open_fut_sec(which_pos_we_need, symbol, size, acc, side, lower_perc, u
         
         #==============SECOND TRY================
         if not new_position:
-            HL.cancel_all_orders()
+            HL.cancel_all_orders(symbol, acc)
             await asyncio.sleep(10)
             new_position = HL.get_position(symbol, acc)
             if not new_position:
@@ -146,7 +146,7 @@ async def open_fut_sec(which_pos_we_need, symbol, size, acc, side, lower_perc, u
                     await asyncio.sleep(4)
         
         if new_position and abs(new_position.get('size', 0)) > 0:
-            HL.cancel_all_orders()
+            HL.cancel_all_orders(symbol, acc)
             await asyncio.sleep(1)
             logger.info(f"Futures position {symbol} - {size} opened.")
             sv.stages[which_pos_we_need]['position']['position_info'] = new_position
