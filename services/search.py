@@ -78,6 +78,7 @@ async def search(which_pos_we_need: str):
             left_to_exp = tools.time_to_expiry(filtered_chain_0[0]['deliveryTime'])
             metrics = analyze_option_slice(filtered_chain_0)
             rr25, best_opts = pic_best_opt(metrics)
+            logger.info(f'BEST OPT: {best_opts}')
             filtered_chain_0 = best_opts
             sv.stages['simulation']['time_to_exp'] = left_to_exp
             
@@ -89,7 +90,7 @@ async def search(which_pos_we_need: str):
             distance = serv.get_distance(k, left_to_exp, which_pos_we_need)
 
             filtered_chain_0 = tools.filter_options_by_distance(filtered_chain_0, distance)
-            
+            logger.info(f'AFTER DISTANCE FILTER: {filtered_chain_0}')
             amount_for_est = 1 if which_pos_we_need =='nothing' else sv.stages[which_pos_we_need]['amount']*v['kof']
             for f in filtered_chain_0:
                 try:
@@ -139,6 +140,7 @@ async def search(which_pos_we_need: str):
                                 target = strike * (1+p_t)
                                 tp_pct, sl_pct = tools.calc_tp_sl_pct(current_px, target, take_profit)
                             
+                            logger.info(f'CALC BID: {v['bids']} {p_t}')
                             targ_bid = tools.calc_bid(v['bids'], p_t)
                             params = {
                                 'lower_perc': sl_pct,
