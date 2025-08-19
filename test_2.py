@@ -3,6 +3,7 @@ import shared_vars as sv
 from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
+import talib
 
 def plot_dataset(dataset: dict[int, dict[int, float]]) -> None:
     days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -29,7 +30,7 @@ def plot_dataset(dataset: dict[int, dict[int, float]]) -> None:
     plt.tight_layout()
     plt.show()
 
-np.set_printoptions(legacy='1.25')
+# np.set_printoptions(legacy='1.25')
 
 dataset = {
     0: {},
@@ -44,14 +45,15 @@ dataset = {
 def main() -> None:
     data = ld.load_candles('../MARKET_DATA/_crypto_data/BTCUSDT/BTCUSDT_1h.csv', datetime(2020, 1, 1), datetime(2025, 6, 1))
     
-    for h in data:
-        dt = datetime.fromtimestamp(h[0]/1000)
+    for i in range(54, len(data)):
+        now = data[i-1]
+        dt = datetime.fromtimestamp(now[0]/1000)
         hour = dt.hour
         weekday = dt.weekday()
         
-        diff = (h[2]-h[3])/h[1]
-        
-        
+        diff = (now[2]-now[3])/now[1]
+
+
         if hour not in dataset[weekday]:
             dataset[weekday][hour] = diff
         else:
