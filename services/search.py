@@ -134,8 +134,8 @@ async def search(which_pos_we_need: str):
                         diff = tools.calculate_percent_difference(current_px, strike)
                         
                     if k == 'BTC':
-                        sv.perc_t = [q_frac+0.004]
-                        sv.perc_tp = [q_frac+0.004]
+                        sv.perc_t = [q_frac+sv.perc_wings]
+                        sv.perc_tp = [q_frac+sv.perc_wings]
                             
                     logger.info(f'iv: {iv}, q_frac: {q_frac}')
 

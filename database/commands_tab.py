@@ -27,6 +27,14 @@ class Commands(BaseModel):
     sol: bool = False
     aloud_only: int = 0
     exp_correct: float = -2.0
+    perc_wings: float = 0.001
+    
+    @classmethod
+    def set_perc_wings(cls, value: float):
+        inst = cls.get_instance()
+        inst.perc_wings = value
+        inst.save()
+        return inst 
 
     @classmethod
     def set_exp_kor(cls, value: float):

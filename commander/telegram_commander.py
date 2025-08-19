@@ -32,6 +32,13 @@ from commander.service import format_trades_report, tail_log
 # ---------------------------------------------------------------------------
 
 
+async def wings(val: str):
+    try:
+        Commands.set_perc_wings(float(val))
+        await tel.send_inform_message("COLLECTOR_API", f"perc_wings: {val}", "", False)
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
+
 async def exp_cor(val: str):
     try:
         Commands.set_exp_kor(float(val))
@@ -248,6 +255,7 @@ def init_commander():
     sv.commander.add_command(["mode"], aloud_mode)
     sv.commander.add_command(["cor"], exp_cor)
     sv.commander.add_command(["tail"], tail)
+    sv.commander.add_command(["wings"], wings)
     sv.commander.add_command(["day"], day)
     sv.commander.add_command(["hist"], trade_hist)
     sv.commander.add_command(["bal"], balances)
