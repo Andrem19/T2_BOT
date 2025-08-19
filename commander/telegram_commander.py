@@ -32,10 +32,11 @@ from commander.service import format_trades_report, tail_log
 # ---------------------------------------------------------------------------
 
 
-async def wings(val: str):
+async def wings(val_1: str, val_2: str):
     try:
-        Commands.set_perc_wings(float(val))
-        await tel.send_inform_message("COLLECTOR_API", f"perc_wings: {val}", "", False)
+        Commands.set_perc_wing_1(float(val_1))
+        Commands.set_perc_wing_2(float(val_2))
+        await tel.send_inform_message("COLLECTOR_API", f"perc_wings: {val_1}-{val_2}", "", False)
     except Exception as e:
         await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
 

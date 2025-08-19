@@ -27,12 +27,20 @@ class Commands(BaseModel):
     sol: bool = False
     aloud_only: int = 0
     exp_correct: float = -2.0
-    perc_wings: float = 0.001
+    perc_wing_1: float = 0.001
+    perc_wing_2: float = 0.001
     
     @classmethod
-    def set_perc_wings(cls, value: float):
+    def set_perc_wing_1(cls, value: float):
         inst = cls.get_instance()
-        inst.perc_wings = value
+        inst.perc_wing_1 = value
+        inst.save()
+        return inst 
+    
+    @classmethod
+    def set_perc_wing_2(cls, value: float):
+        inst = cls.get_instance()
+        inst.perc_wing_2 = value
         inst.save()
         return inst 
 

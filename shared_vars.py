@@ -249,7 +249,8 @@ data_list = []
 timer_msg = 600
 close_1 = False
 close_2 = False
-perc_wings = 0.001
+perc_wing_1 = 0.001
+perc_wing_2 = 0.001
 simulation = True
 opt_types = ['put', 'call']
 
