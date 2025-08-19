@@ -31,6 +31,8 @@ async def open_futures(position: dict, which_pos_we_need: str):
         fut_full_amt = (position['qty']*sv.stages[which_pos_we_need]['amount'])
         fut_amt = tools.qty_for_target_profit(currentPx, tp_perc, position['ask']*sv.stages[which_pos_we_need]['amount']*1.10)
         second_stage_qty = fut_full_amt - fut_amt
+        if second_stage_qty < 0.001:
+            fut_amt = fut_full_amt
         
         
         HL.open_market_order(symbol, side, 0, False, fut_amt, acc)
@@ -59,10 +61,14 @@ async def open_futures(position: dict, which_pos_we_need: str):
             sv.stages[which_pos_we_need]['base_coin'] = position['name']
             sv.stages[which_pos_we_need]['position']['exist'] = True
             sv.stages[which_pos_we_need]['position']['position_info'] = new_position
-            sv.stages[which_pos_we_need]['position']['second_taken'] = False
-            if second_stage_qty > 0:
-                sv.stages[which_pos_we_need]['position']['second_stage_qty'] = second_stage_qty
             
+            if second_stage_qty > 0.01:
+                sv.stages[which_pos_we_need]['position']['second_taken'] = False
+                sv.stages[which_pos_we_need]['position']['second_stage_qty'] = second_stage_qty
+            else:
+                sv.stages[which_pos_we_need]['position']['second_taken'] = True
+                sv.stages[which_pos_we_need]['position']['second_stage_qty'] = 0
+                
             entry_px = float(new_position['entryPx'])
             size_px  = float(new_position['size'])
             
@@ -116,7 +122,7 @@ async def second_stage_check(which_pos_we_need: str):
             need_to_add = current_px > entryPx and abs((current_px-entryPx)/current_px) > need_dist
         if need_to_add:
             qty = sv.stages[which_pos_we_need]['position']['second_stage_qty']
-            if qty>0.001:
+            if qty>=0.001:
                 await open_fut_sec(which_pos_we_need, symbol, qty, acc, side, lower_perc, upper_perc, entryPx)
                 sv.stages[which_pos_we_need]['position']['second_taken'] = True
                 serv.save_stages(sv.stages)
