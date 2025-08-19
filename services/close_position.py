@@ -17,8 +17,8 @@ async def close_position_fully(pos_name, reason, last_px):
     
     acc = 2 if pos_name =='first' else 1
     symbol_fut = sv.stages[pos_name]['base_coin'] + 'USDT'
+    HL.cancel_all_orders(symbol_fut, acc)
     if not 'no_fut' in reason:
-        HL.cancel_all_orders(symbol_fut, acc)
         position = HL.get_position(symbol_fut, acc)
         try:
             fut_size = float(position.get("size", 0) or 0)
@@ -28,7 +28,7 @@ async def close_position_fully(pos_name, reason, last_px):
         if abs(fut_size) >= 1e-9:
             await close_futures(acc, symbol_fut, pos_name, fut_size)
     
-    if reason == 'no_fut_sl' or reason == 'sl_hit' or reason == 'pnl_hit_opt' or reason == 'close_command':
+    if reason != 'no_opt':
         await close_option(acc, reason, pos_name)
     
     # обнулить состояние

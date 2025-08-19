@@ -118,12 +118,10 @@ async def main():
             if sv.stages['second']['exist']:
                 last_pr = PriceCache.get(sv.stages['second']['base_coin'] + 'USDT')
                 _ = await monitoring.process_position(last_pr, 'second')
-                await open_fut.second_stage_check('second')
                 
             if sv.stages['first']['exist']:
                 last_pr = PriceCache.get(sv.stages['first']['base_coin'] + 'USDT')
                 _ = await monitoring.process_position(last_pr, 'first')
-                await open_fut.second_stage_check('first')
 
             if sv.stages['second']['exist'] or sv.stages['first']['exist']:
                 ensure_option_feed_alive()

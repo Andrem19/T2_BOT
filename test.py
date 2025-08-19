@@ -44,10 +44,15 @@ perc_tp = [0.02, 0.025, 0.03, 0.04]
 
 
 async def main():
-    fut_full_amt = (0.005*2)
-    fut_amt = tools.qty_for_target_profit(115440, 0.0153, 6.15*2*1.10)
-    second_stage_qty = fut_full_amt - fut_amt
-    print(fut_full_amt, fut_amt, second_stage_qty)
+    # fut_full_amt = (0.005*2)
+    # fut_amt = tools.qty_for_target_profit(115440, 0.0153, 6.15*2*1.10)
+    # second_stage_qty = fut_full_amt - fut_amt
+    # print(fut_full_amt, fut_amt, second_stage_qty)
+    pos = HL.place_limit_post_only('BTCUSDT', 'Buy', 113200, 0, 0.001, False, 1)
+    print(pos)
+    # res = HL.open_SL_position('BTCUSDT', 'Buy', 113961, 0.011, 1)
+    # res = HL.open_TP_position('BTCUSDT', 'Buy', 113961, 0.011, 1)
+    # print(res)
     # BB.initialise()
     # chain = BB.Chain.get_chain_full(underlying='BTC', days=2, with_greeks=True) or []
     # opt_day_1, _ = tools.get_next_friday_day(1)
