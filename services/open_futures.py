@@ -126,6 +126,7 @@ async def second_stage_check(which_pos_we_need: str):
                 await open_fut_sec(which_pos_we_need, symbol, qty, acc, side, lower_perc, upper_perc, entryPx)
                 sv.stages[which_pos_we_need]['position']['second_taken'] = True
                 serv.save_stages(sv.stages)
+                await safe_send("COLLECTOR_API", f'add fut was taken successfuly', '', False)
     except Exception as e:
         await safe_send("TELEGRAM_API", f'second_stage_check ERROR: {e}', '', False)
         
