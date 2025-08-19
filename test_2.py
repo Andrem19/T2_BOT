@@ -49,7 +49,7 @@ def main() -> None:
         hour = dt.hour
         weekday = dt.weekday()
         
-        diff = (h[2]-h[3])/h[2]
+        diff = (h[2]-h[3])/h[1]
         
         
         if hour not in dataset[weekday]:
