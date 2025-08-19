@@ -62,7 +62,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
             sv.stages[which_pos_we_need]['position']['exist'] = True
             sv.stages[which_pos_we_need]['position']['position_info'] = new_position
             
-            if second_stage_qty > 0.01:
+            if second_stage_qty > 0.001:
                 sv.stages[which_pos_we_need]['position']['second_taken'] = False
                 sv.stages[which_pos_we_need]['position']['second_stage_qty'] = second_stage_qty
             else:

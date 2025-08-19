@@ -44,19 +44,23 @@ perc_tp = [0.02, 0.025, 0.03, 0.04]
 
 
 async def main():
-    BB.initialise()
-    chain = BB.Chain.get_chain_full(underlying='BTC', days=2, with_greeks=True) or []
-    opt_day_1, _ = tools.get_next_friday_day(1)
-    filtered_chain_0 = []
+    fut_full_amt = (0.005*2)
+    fut_amt = tools.qty_for_target_profit(115440, 0.0153, 6.15*2*1.10)
+    second_stage_qty = fut_full_amt - fut_amt
+    print(fut_full_amt, fut_amt, second_stage_qty)
+    # BB.initialise()
+    # chain = BB.Chain.get_chain_full(underlying='BTC', days=2, with_greeks=True) or []
+    # opt_day_1, _ = tools.get_next_friday_day(1)
+    # filtered_chain_0 = []
 
-    filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
-    filtered_chain_0.extend(filtered_chain_calls)
+    # filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
+    # filtered_chain_0.extend(filtered_chain_calls)
 
-    filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
-    filtered_chain_0.extend(filtered_chain_puts)
-    res = analyze_option_slice(filtered_chain_0)
-    opt = pic_best_opt(res)
-    print(opt)
+    # filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
+    # filtered_chain_0.extend(filtered_chain_puts)
+    # res = analyze_option_slice(filtered_chain_0)
+    # opt = pic_best_opt(res)
+    # print(opt)
     # res = HL.open_TP('BTCUSDT', 'Sell', 0.00366, 119826, 0.02)
     # print(res)
     # res = tools.qty_for_target_profit(120000, 0.01, 4)
