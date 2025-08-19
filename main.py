@@ -94,10 +94,8 @@ async def main():
                     
                     distance = serv.get_distance(best_simulation['name'], left_to_exp, which_pos_we_need)
                     expect = serv.get_expect(sv.actual_bd, which_pos_we_need, best_simulation['name'])
-                    
-                    second_oposite = True if which_pos_we_need == 'first' or serv.is_oposite(best_simulation) else False
 
-                    if best_simulation['pnl'] >= expect and best_simulation['strike_perc']<= distance and second_oposite:
+                    if best_simulation['pnl'] >= expect and best_simulation['strike_perc']<= distance:
                         opt_is_open = await open_opt.open_opt(best_simulation, which_pos_we_need)
                         if opt_is_open:
                             fut_is_open = await open_fut.open_futures(best_simulation, which_pos_we_need)
