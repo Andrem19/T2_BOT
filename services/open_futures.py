@@ -78,7 +78,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
             logger.info(f"{which_pos_we_need} Take Profit opened.")
             
             if second_stage_qty >= 0.001:
-                need_dist = position['lower_perc']*0.35 if side == 'Buy' else position['upper_perc']*0.35
+                need_dist = position['lower_perc']*0.30 if side == 'Buy' else position['upper_perc']*0.30
                 
                 add_price = entry_px * (1+need_dist) if side == 'Sell' else entry_px * (1-need_dist)
                 sv.stages[which_pos_we_need]['position']['second_stage_px'] = add_price

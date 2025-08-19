@@ -477,7 +477,7 @@ class HL:
 
         if "filled" in status0:
             sv.logger.info("[%s] initial ALO filled immediately (rare). Fetching position…", trace_id)
-            time.sleep(0.2)
+            time.sleep(1)
             pos = HL.get_position(coin, account_idx)
             sv.logger.info("[%s] position after immediate fill: %s", trace_id, pos)
             return pos
@@ -507,7 +507,7 @@ class HL:
                     st = order2["response"]["data"]["statuses"][0]
                     if "filled" in st:
                         sv.logger.info("[%s] second ALO filled immediately. Fetching position…", trace_id)
-                        time.sleep(0.2)
+                        time.sleep(1)
                         pos = HL.get_position(coin, account_idx)
                         sv.logger.info("[%s] position after second fill: %s", trace_id, pos)
                         return pos
@@ -523,7 +523,7 @@ class HL:
                     "[%s] unable to place ALO resting order; fallback to market open", trace_id
                 )
                 HL.open_market_order(coin, sd, amount_usdt, reduce_only, amount_coins, account_idx)
-                time.sleep(0.2)
+                time.sleep(1)
                 pos = HL.get_position(coin, account_idx)
                 sv.logger.info("[%s] position after market fallback: %s", trace_id, pos)
                 return pos
@@ -552,7 +552,7 @@ class HL:
             if not still_open:
                 # Считаем, что исполнился/снялся где-то вовне — проверим позицию
                 sv.logger.info("[%s] order not found in open list; fetching position…", trace_id)
-                time.sleep(0.2)
+                time.sleep(1)
                 pos = HL.get_position(coin, account_idx)
                 sv.logger.info("[%s] position after disappearance from open list: %s", trace_id, pos)
                 return pos
@@ -595,7 +595,7 @@ class HL:
                             st = res["response"]["data"]["statuses"][0]
                             if "filled" in st:
                                 sv.logger.info("[%s] modify_order -> filled. Fetching position…", trace_id)
-                                time.sleep(0.2)
+                                time.sleep(1)
                                 pos = HL.get_position(coin, account_idx)
                                 sv.logger.info("[%s] position after modify fill: %s", trace_id, pos)
                                 return pos
@@ -619,7 +619,7 @@ class HL:
                     except Exception:
                         sv.logger.exception("[%s] cancel_all_orders failed", trace_id)
                     HL.open_market_order(coin, sd, amount_usdt, reduce_only, amount_coins, account_idx)
-                    time.sleep(0.2)
+                    time.sleep(1)
                     pos = HL.get_position(coin, account_idx)
                     sv.logger.info("[%s] position after market fallback: %s", trace_id, pos)
                     return pos
