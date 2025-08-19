@@ -85,7 +85,7 @@ async def main():
                 await search.search(which_pos_we_need)
             
             #===========OPEN POSITION==============
-            if which_pos_we_need != 'nothing' and h in [7, 8, 11, 12, 13, 22, 23, 0] and weekday not in [5]:
+            if which_pos_we_need != 'nothing' and (h in [11, 12] and weekday in [0,1,2,3,4]) or (h in [18, 19] and weekday in [6]):
                 
                 left_to_exp = serv.hours_until_next_8utc()
                 best_simulation = serv.get_best()

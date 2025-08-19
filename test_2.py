@@ -1,39 +1,67 @@
-# quick_test.py
-# Полный скрипт для быстрой проверки. Использует OpenAI-совместимый API Ollama.
-# Устанавливаем зависимости: pip install --upgrade openai httpx
-# sudo systemctl start ollama
-# OLLAMA_KEEP_ALIVE=30m ollama serve
-from openai import OpenAI
+import simulation.load_data as ld
+import shared_vars as sv
+from datetime import datetime
+import numpy as np
+import matplotlib.pyplot as plt
+
+def plot_dataset(dataset: dict[int, dict[int, float]]) -> None:
+    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+    fig, axs = plt.subplots(nrows=4, ncols=2, figsize=(16, 12))
+    axs = axs.flatten()
+
+    for weekday in range(7):
+        hours = list(range(24))
+        values = [dataset[weekday].get(h, 0) for h in hours]
+
+        ax = axs[weekday]
+        ax.bar(hours, values, width=0.6)
+        ax.set_title(days[weekday])
+        ax.set_xlabel('Hour of Day')
+        ax.set_ylabel('Accumulated Diff')
+        ax.grid(True)
+        ax.set_xticks(range(0, 24, 1))
+
+    # Remove unused subplot (if any)
+    fig.delaxes(axs[7])
+
+    fig.suptitle('Hourly Accumulated Diff by Day of Week', fontsize=16)
+    plt.tight_layout()
+    plt.show()
+
+np.set_printoptions(legacy='1.25')
+
+dataset = {
+    0: {},
+    1: {},
+    2: {},
+    3: {},
+    4: {},
+    5: {},
+    6: {}
+}
 
 def main() -> None:
-    client = OpenAI(
-        base_url="http://localhost:11434/v1",
-        api_key="ollama"  # любое непустое значение
-    )
+    data = ld.load_candles('../MARKET_DATA/_crypto_data/BTCUSDT/BTCUSDT_1h.csv', datetime(2020, 1, 1), datetime(2025, 6, 1))
+    
+    for h in data:
+        dt = datetime.fromtimestamp(h[0]/1000)
+        hour = dt.hour
+        weekday = dt.weekday()
+        
+        diff = (h[2]-h[3])/h[2]
+        
+        
+        if hour not in dataset[weekday]:
+            dataset[weekday][hour] = diff
+        else:
+            dataset[weekday][hour] += diff
+    
+    print(dataset)
+    print(len(data))
+    plot_dataset(dataset)
+        
 
-    # Короткий запрос, ограниченный max_tokens (быстро)
-    resp = client.chat.completions.create(
-        model="gpt-oss:20b",
-        messages=[
-            {"role": "system", "content": "Your answers are brief and to the point. This is the title and other data of the article. Your task is to determine the importance of this article for the crypto market (BTС, ETH) on a 7-point scale. And the duration of how many days to consider this news relevant (meaning it can still influence) You need to return in the json format an answer with two fields importance and duration and the corresponding values."},
-            {"role": "user", "content": 
-''' 
-category	crypto
-source	CoinDesk
-title	Salomon Brothers Say It Has Completed Process of Notifying 'Abandoned' Crypto Wallets
-published_utc	2025-08-07'''}
-        ],
-        temperature=0.2,
-        max_tokens=200,
-        top_p=0.9,
-        stream=True,
-    )
-
-    print("Ответ модели:\n")
-    for chunk in resp:
-        delta = chunk.choices[0].delta.content or ""
-        print(delta, end="", flush=True)
-    print()
 
 if __name__ == "__main__":
     main()
