@@ -377,3 +377,7 @@ def get_best():
             return None
     except Exception as e:
         logger.error(f'ERROR in  get_best() {e}')
+        
+
+def is_oposite(position):
+    return (sv.stages['first']['position']['position_info']['size']<0 and position['type'].lower() == 'put') or (sv.stages['first']['position']['position_info']['size']>0 and position['type'].lower() == 'call')
