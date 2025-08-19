@@ -6,14 +6,14 @@ import talib
 
 def signal(data, i: int) -> dict:
 
-    decision = False
-    dt = datetime.fromtimestamp(data[i][0]/1000)
+    # decision = False
+    # dt = datetime.fromtimestamp(data[i][0]/1000)
     
-    hour = dt.hour
-    weekday = dt.weekday()
-    if hour in [11, 12] and weekday in [0,1,2,3,4]:
-        decision = True
+    # hour = dt.hour
+    # weekday = dt.weekday()
+    # if hour in [11, 12] and weekday in [0,1,2,3,4]:
+    #     decision = True
     
     return {
-        "decision": decision,
+        "decision": True,
     }
