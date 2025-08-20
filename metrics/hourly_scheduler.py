@@ -75,9 +75,9 @@ def _next_trigger_57(now: datetime) -> datetime:
     Ближайшее локальное время с минутой = 57 и секундами = 0.
     Если уже прошли :57 текущего часа — берём следующий час.
     """
-    target = now.replace(minute=53, second=0, microsecond=0)
+    target = now.replace(minute=57, second=0, microsecond=0)
     if now >= target:
-        target = (target + timedelta(hours=1)).replace(minute=53, second=0, microsecond=0)
+        target = (target + timedelta(hours=1)).replace(minute=57, second=0, microsecond=0)
     return target
 
 # ------------------------------ РЕАЛЬНЫЕ ЗАДАЧИ ------------------------------
@@ -292,14 +292,14 @@ class HourlyAt57Scheduler:
 
             # 2) task_two (await)
             t2_res: Dict[str, Any] = await task_two(t1_res)
-
-            minify_dict = map_time_to_score([t2_res])
-            pretty_str = tools.dict_to_pretty_string(minify_dict)
-            await tel.send_inform_message("COLLECTOR_API", f"{pretty_str}", "", False)
-            # 3) Пишем в файл ТОЛЬКО результат task_two + time_utc (UTC)
+            
             payload: Dict[str, Any] = dict(t2_res) if isinstance(t2_res, dict) else {"result": t2_res}
             payload["time_utc"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
+            minify_dict = map_time_to_score([payload])
+            pretty_str = tools.dict_to_pretty_string(minify_dict)
+            await tel.send_inform_message("COLLECTOR_API", f"{pretty_str}", "", False)
+            # 3) Пишем в файл ТОЛЬКО результат task_two + time_utc (UTC)
             try:
                 _append_json_line(self.cfg.metrics_path, payload)
                 _logger.info("Метрика записана (%s). Только task_two + time_utc.", self.cfg.metrics_path)

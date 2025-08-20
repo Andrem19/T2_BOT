@@ -3,13 +3,15 @@
 intel.py — безопасный сборщик рыночных сигналов с файловым кэшем.
 
 Что внутри:
-- Дисковый кэш (persist): .intel_cache/ (можно сменить).
-- Rate-limiter per-host + «вес/мин» + min-gap.
+- Дисковый кэш (persist): .intel_cache/ (можно сменить переменной INTEL_CACHE_DIR).
+- Stale-while-revalidate: при сетевой ошибке отдаём последнюю копию из кэша.
+- Потокобезопасные FileCache, RateLimiter и Http (Session с пулом соединений).
+- Параллелизация независимых блоков snapshot() с соблюдением лимитов хостов.
 - Бережная обработка 429/Retry-After (экспоненциальный бэкофф с джиттером).
 - Адаптивный сбор aggTrades с бюджетом вызовов и кэшированием каждой страницы.
 
 Функциональность (как была): Binance (цена/OI/funding/basis/flows/depth/ratios),
-кросс-биржи (Bybit/OKX/Deribit), macro (ES/NQ/DXY со Stooq).
+кросс-биржи (Bybit/OKX/Deribit), macro (ES/NQ/DXY со Stooq + fallback).
 """
 
 from __future__ import annotations
@@ -22,12 +24,15 @@ import json
 import math
 import random
 import hashlib
+import threading
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import requests
+from requests.adapters import HTTPAdapter
 
 
 # =========================
@@ -37,6 +42,13 @@ import requests
 CACHE_DIR = os.environ.get("INTEL_CACHE_DIR", ".intel_cache")
 CACHE_CLEAN_PROB = float(os.environ.get("INTEL_CACHE_CLEAN_PROB", "0.02"))  # 2% шансов чистить протухшее при каждом сохранении
 
+# Конкурентность сборки снапшота
+INTEL_CONCURRENCY = int(os.environ.get("INTEL_CONCURRENCY", "6"))
+
+# Таймауты HTTP
+HTTP_CONNECT_TIMEOUT = float(os.environ.get("INTEL_HTTP_CONNECT_TIMEOUT", "5.0"))
+HTTP_READ_TIMEOUT = float(os.environ.get("INTEL_HTTP_READ_TIMEOUT", "8.0"))
+
 # Минимальная пауза между запросами к одному хосту (сек)
 MIN_GAP_PER_HOST = {
     "api.binance.com": 0.25,
@@ -45,6 +57,7 @@ MIN_GAP_PER_HOST = {
     "www.okx.com": 0.25,
     "www.deribit.com": 0.25,
     "stooq.com": 0.50,
+    "stooq.pl": 0.50,   # добавили fallback-хост
 }
 
 # Максимум «условных весов» на 60 секунд
@@ -55,6 +68,7 @@ MAX_WEIGHT_PER_MIN = {
     "www.okx.com": 120,
     "www.deribit.com": 120,
     "stooq.com": 60,
+    "stooq.pl": 60,  # для fallback-хоста
 }
 
 def endpoint_weight(host: str, path: str) -> int:
@@ -78,7 +92,7 @@ def endpoint_weight(host: str, path: str) -> int:
 def endpoint_ttl_seconds(host: str, path: str, params: Dict[str, Any]) -> int:
     p = path.lower()
     # Stooq snapshot
-    if host.endswith("stooq.com") and p.startswith("/q/l"):
+    if (host.endswith("stooq.com") or host.endswith("stooq.pl")) and p.startswith("/q/l"):
         return 180  # ES/NQ/DXY можно кэшировать 3 минуты
     # Binance breadth
     if p.endswith("/api/v3/ticker/24hr"):
@@ -113,12 +127,13 @@ def endpoint_ttl_seconds(host: str, path: str, params: Dict[str, Any]) -> int:
 
 
 # =========================
-# Дисковый кэш
+# Дисковый кэш (потокобезопасный)
 # =========================
 
 class FileCache:
     def __init__(self, root: str = CACHE_DIR):
         self.root = root
+        self._lock = threading.Lock()
         try:
             os.makedirs(self.root, exist_ok=True)
         except Exception:
@@ -132,29 +147,30 @@ class FileCache:
     def _path_for(self, key: str) -> str:
         return os.path.join(self.root, self._key_to_name(key))
 
-    def get(self, key: str) -> Optional[Any]:
+    def get_with_meta(self, key: str) -> Tuple[Optional[Any], bool]:
+        """
+        Возвращает (value, is_expired). Не удаляет протухшие файлы — это даёт
+        возможность stale-fallback при сетевой ошибке.
+        """
         path = self._path_for(key)
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                obj = json.load(f)
-            if float(obj.get("expires", 0.0)) < time.time():
-                # протух — удалим лениво
-                try:
-                    os.remove(path)
-                except Exception:
-                    pass
-                return None
+            with self._lock:
+                with open(path, "r", encoding="utf-8") as f:
+                    obj = json.load(f)
+            exp = float(obj.get("expires", 0.0))
+            is_expired = (exp < time.time())
             ctype = obj.get("ctype")
-            if ctype == "json":
-                return obj.get("value")
-            elif ctype == "text":
-                return obj.get("value")
-            # неизвестный тип — игнор
-            return None
+            if ctype in ("json", "text"):
+                return obj.get("value"), is_expired
+            return None, True
         except FileNotFoundError:
-            return None
+            return None, True
         except Exception:
-            return None
+            return None, True
+
+    def get(self, key: str) -> Optional[Any]:
+        val, expired = self.get_with_meta(key)
+        return val if not expired else None
 
     def set(self, key: str, value: Any, ttl_seconds: int, ctype: str):
         path = self._path_for(key)
@@ -163,13 +179,13 @@ class FileCache:
             "ctype": ctype,
             "value": value,
         }
-        tmp = path + ".tmp"
+        tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
         try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(obj, f)
-            os.replace(tmp, path)
+            with self._lock:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(obj, f)
+                os.replace(tmp, path)
         except Exception:
-            # кэш опционален — просто продолжаем
             try:
                 if os.path.exists(tmp):
                     os.remove(tmp)
@@ -182,19 +198,26 @@ class FileCache:
     def _cleanup(self):
         now = time.time()
         try:
-            for name in os.listdir(self.root):
-                if not name.endswith(".json"): 
+            with self._lock:
+                names = list(os.listdir(self.root))
+            for name in names:
+                if not name.endswith(".json"):
                     continue
                 path = os.path.join(self.root, name)
                 try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        obj = json.load(f)
+                    with self._lock:
+                        with open(path, "r", encoding="utf-8") as f:
+                            obj = json.load(f)
                     if float(obj.get("expires", 0.0)) < now:
-                        os.remove(path)
+                        with self._lock:
+                            try:
+                                os.remove(path)
+                            except Exception:
+                                pass
                 except Exception:
-                    # повредился файл — удалить
                     try:
-                        os.remove(path)
+                        with self._lock:
+                            os.remove(path)
                     except Exception:
                         pass
         except Exception:
@@ -202,7 +225,7 @@ class FileCache:
 
 
 # =========================
-# RateLimiter
+# RateLimiter (потокобезопасный)
 # =========================
 
 class RateLimiter:
@@ -213,8 +236,9 @@ class RateLimiter:
         self._last_ts = 0.0
         self._win = deque()
         self._win_weight = 0
+        self._lock = threading.Lock()
 
-    def _prune(self, now: float):
+    def _prune_locked(self, now: float):
         while self._win and now - self._win[0][0] >= 60.0:
             _, w = self._win.popleft()
             self._win_weight -= w
@@ -222,22 +246,29 @@ class RateLimiter:
     def acquire(self, weight: int):
         weight = max(1, int(weight))
         while True:
-            now = time.time()
-            # min-gap
-            gap = now - self._last_ts
-            if gap < self.min_gap:
-                time.sleep(self.min_gap - gap)
+            sleep_for = 0.0
+            with self._lock:
+                now = time.time()
+                # min-gap
+                gap = now - self._last_ts
+                if gap < self.min_gap:
+                    sleep_for = self.min_gap - gap
+                else:
+                    # вес/мин
+                    self._prune_locked(now)
+                    if self._win_weight + weight > self.max_per_min:
+                        oldest_ts = self._win[0][0] if self._win else now
+                        sleep_for = max(0.05, 60.0 - (now - oldest_ts))
+                    else:
+                        # можно проходить
+                        self._win.append((now, weight))
+                        self._win_weight += weight
+                        self._last_ts = now
+                        sleep_for = 0.0
+                # выходим из критической секции
+            if sleep_for > 0.0:
+                time.sleep(min(sleep_for, 5.0))
                 continue
-            # вес/мин
-            self._prune(now)
-            if self._win_weight + weight > self.max_per_min:
-                oldest_ts = self._win[0][0] if self._win else now
-                wait = max(0.05, 60.0 - (now - oldest_ts))
-                time.sleep(min(wait, 5.0))
-                continue
-            self._win.append((now, weight))
-            self._win_weight += weight
-            self._last_ts = now
             return
 
 
@@ -261,18 +292,24 @@ def _pct(a: float, b: float) -> float:
 
 
 # =========================
-# HTTP клиент (кэш + лимит)
+# HTTP клиент (кэш + лимит + stale fallback + пул)
 # =========================
 
 class Http:
     def __init__(self, base_url: str, cache: FileCache):
         self.base = base_url.rstrip("/")
         self.s = requests.Session()
+        # Пул соединений для многопоточности
+        adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100, max_retries=0)
+        self.s.mount("https://", adapter)
+        self.s.mount("http://", adapter)
+
         self.host = self.base.split("://", 1)[-1]
         self.limiter = RateLimiter(self.host)
         self.cache = cache
 
-        self.timeout = 10
+        self.timeout_connect = HTTP_CONNECT_TIMEOUT
+        self.timeout_read = HTTP_READ_TIMEOUT
         self.max_retries = 6
         self.base_backoff = 0.6
         self.max_backoff = 8.0
@@ -281,7 +318,11 @@ class Http:
         self.default_headers = {
             "User-Agent": "intel-safe-client/1.0",
             "Accept": "application/json,text/csv;q=0.9,*/*;q=0.8",
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "keep-alive",
         }
+
+        self._io_lock = threading.Lock()  # Session.get — под замком для чистоты потоков
 
     def _make_key(self, path: str, params: Optional[Dict[str, Any]]) -> str:
         # нормализуем параметры: сортировка, выбрасываем None
@@ -294,10 +335,10 @@ class Http:
     def get(self, path: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None) -> Any:
         key = self._make_key(path, params)
         ttl = endpoint_ttl_seconds(self.host, path, params or {})
-        # пробуем кэш
-        cached = self.cache.get(key)
-        if cached is not None:
-            return cached
+        # Пробуем кэш (с метаданными, чтобы уметь отдать «просрочку» при аварии)
+        cached_val, cached_expired = self.cache.get_with_meta(key)
+        if cached_val is not None and not cached_expired:
+            return cached_val
 
         url = f"{self.base}{path}"
         w = endpoint_weight(self.host, path)
@@ -307,7 +348,13 @@ class Http:
         for _ in range(self.max_retries + 1):
             self.limiter.acquire(w)
             try:
-                r = self.s.get(url, params=params, headers={**self.default_headers, **(headers or {})}, timeout=self.timeout)
+                with self._io_lock:
+                    r = self.s.get(
+                        url,
+                        params=params,
+                        headers={**self.default_headers, **(headers or {})},
+                        timeout=(self.timeout_connect, self.timeout_read),
+                    )
                 if r.status_code == 429:
                     ra = r.headers.get("Retry-After")
                     if ra:
@@ -341,6 +388,10 @@ class Http:
                 time.sleep(wait)
                 backoff = min(backoff * 2.0, self.max_backoff)
 
+        # Все попытки не удались — если в кэше была просроченная копия, отдадим её.
+        if cached_val is not None:
+            return cached_val
+
         raise RuntimeError(f"GET failed {url} params={params}: {last_err}")
 
 
@@ -353,7 +404,8 @@ BINANCE_FAPI = "https://fapi.binance.com"
 BYBIT = "https://api.bybit.com"
 OKX = "https://www.okx.com"
 DERIBIT = "https://www.deribit.com"
-STOOQ = "https://stooq.com"
+# Несколько баз для Stooq (fallback)
+STOOQ_BASES = ["https://stooq.com", "https://stooq.pl"]
 
 class BinancePublic:
     def __init__(self, cache: FileCache):
@@ -368,7 +420,7 @@ class BinancePublic:
         return self.fapi.get("/fapi/v1/premiumIndex", {"symbol": symbol} if symbol else {})
 
     def fapi_premium_index_klines(self, symbol: str, interval: str, start_time: int, end_time: int, limit: int = 500) -> List[list]:
-        return self.fapi.get("/fapi/v1/premiumIndexKlines", {"symbol": symbol, "interval": interval, "startTime": start_time, "endTime": end_time, "limit": limit})
+        return self.fapi.get("/fapi/v1/premiumIndexKlines", {"symbol": symbol, "interval": interval, "startTime": start_time, "EndTime": end_time, "limit": limit})
 
     def fapi_continuous_klines(self, pair: str, contract_type: str, interval: str, start_time: int, end_time: int, limit: int = 500) -> List[list]:
         return self.fapi.get("/fapi/v1/continuousKlines", {"pair": pair, "contractType": contract_type, "interval": interval, "startTime": start_time, "endTime": end_time, "limit": limit})
@@ -458,14 +510,16 @@ class DeribitPublic:
 
 class StooqPublic:
     def __init__(self, cache: FileCache):
-        self.http = Http(STOOQ, cache)
-    def quote_snapshot(self, symbol: str) -> Dict[str, Any]:
-        txt = self.http.get("/q/l/", {"s": symbol.lower(), "f": "sd2t2ohlcv", "h": "", "e": "csv"})
+        # несколько клиентов на разные базы (fallback)
+        self.clients = [Http(base, cache) for base in STOOQ_BASES]
+
+    def _try_one(self, http: Http, symbol: str) -> Optional[Dict[str, Any]]:
+        txt = http.get("/q/l/", {"s": symbol.lower(), "f": "sd2t2ohlcv", "h": "", "e": "csv"})
         if not isinstance(txt, str) or not txt.strip():
-            return {}
+            return None
         lines = [ln.strip() for ln in txt.strip().splitlines() if ln.strip()]
         if len(lines) < 2:
-            return {}
+            return None
         header = [h.strip().lower() for h in lines[0].split(",")]
         row = [c.strip() for c in lines[1].split(",")]
         idx = {name: i for i, name in enumerate(header)}
@@ -478,12 +532,25 @@ class StooqPublic:
         date_s = col("date") or ""
         time_s = col("time") or ""
         return {
-            "symbol": col("symbol") or symbol.upper(),
+            "symbol": (col("symbol") or symbol.upper()),
             "date": date_s, "time": time_s,
             "open": o, "high": h, "low": l, "close": c, "volume": v,
             "intraday_change_pct": _pct(o, c),
             "valid": (math.isfinite(o) and math.isfinite(c)),
         }
+
+    def quote_snapshot(self, symbol: str) -> Dict[str, Any]:
+        last_err = None
+        for http in self.clients:
+            try:
+                q = self._try_one(http, symbol)
+                if q and q.get("valid"):
+                    return q
+            except Exception as e:
+                last_err = e
+                continue
+        # если не удалось и кэша не было (Http сам вернёт stale при наличии) — вернём пустой
+        return {"symbol": symbol.upper(), "valid": False, "_partial": True, "_reason": (str(last_err) if last_err else "unavailable")}
 
 
 # =========================
@@ -835,25 +902,63 @@ class MarketIntel:
         def lean(s: Optional[str]) -> int: return 1 if s == "up" else -1 if s == "down" else 0
         return {"ES": es, "NQ": nq, "DXY": dx, "macro_lean_score": lean(es.get("sense")) + lean(nq.get("sense")) - lean(dx.get("sense"))}
 
-    # ---- Компоновка ----
+    # ---- Компоновка со строгой параллелизацией ----
 
     def snapshot(self, symbol: str = "BTCUSDT", lookback_hours: float = 2.0, asof_utc: Optional[datetime] = None) -> Dict[str, Any]:
         if asof_utc is None:
             asof_utc = datetime.now(timezone.utc)
 
+        # 1) Сначала быстрый ценовой блок (нужен для orderbook mid)
         price = self.price_block(symbol, lookback_hours, interval="5m")
-        open_interest = self.open_interest_block(symbol, lookback_hours, period="5m")
-        funding, basis = self.funding_basis_block(symbol)
-        flows = self.flows_block(spot_symbol="BTCUSDT", perp_symbol=symbol, lookback_hours=lookback_hours)
-        orderbook = self.orderbook_block(spot_symbol="BTCUSDT", use_price=price.get("close") if price else None)
 
-        x_perp = self.cross_exchange_perp_snapshot(symbol_binance=symbol, bybit_symbol="BTCUSDT", okx_inst="BTC-USDT-SWAP", deribit_instr="BTC-PERPETUAL")
-        cal_basis = self.calendar_basis_block(pair="BTCUSDT", interval="5m", lookback_hours=lookback_hours)
-        sent = self.sentiment_ratios_block(symbol=symbol, period="5m", lookback_points=int(lookback_hours * 12))
-        breadth = self.market_breadth_spot_usdt(top_n_by_quote_vol=50)
-        stables = self.stablecoin_deviation()
-        macro = self.macro_weather_block()
+        # 2) Параллельно остальное (независимые блоки)
+        results: Dict[str, Any] = {}
+        with ThreadPoolExecutor(max_workers=max(2, INTEL_CONCURRENCY)) as ex:
+            futs = {
+                "open_interest": ex.submit(self.open_interest_block, symbol, lookback_hours, "5m"),
+                "funding_basis": ex.submit(self.funding_basis_block, symbol),
+                "flows":         ex.submit(self.flows_block, "BTCUSDT", symbol, lookback_hours),
+                "orderbook":     ex.submit(self.orderbook_block, "BTCUSDT", price.get("close") if price else None),
+                "x_perp":        ex.submit(self.cross_exchange_perp_snapshot, symbol, "BTCUSDT", "BTC-USDT-SWAP", "BTC-PERPETUAL"),
+                "calendar_basis":ex.submit(self.calendar_basis_block, "BTCUSDT", "5m", lookback_hours),
+                "sentiment":     ex.submit(self.sentiment_ratios_block, symbol, "5m", int(lookback_hours * 12)),
+                "breadth":       ex.submit(self.market_breadth_spot_usdt, 50),
+                "stablecoins":   ex.submit(self.stablecoin_deviation),
+                "macro":         ex.submit(self.macro_weather_block),
+            }
+            for name, fut in futs.items():
+                try:
+                    results[name] = fut.result()
+                except Exception as e:
+                    # сохраняем совместимый по схеме тип либо пустой/частичный
+                    if name == "funding_basis":
+                        results[name] = ({"rates": [], "avg_rate": float("nan"),
+                                          "last_funding_rate": float("nan"), "who_pays_now": None,
+                                          "mark_price": float("nan"), "index_price": float("nan"),
+                                          "snapshot_time": None},
+                                         {"basis_now": float("nan"), "basis_last_close": float("nan"),
+                                          "basis_then_open": float("nan"), "basis_change_abs": float("nan"), "bars": 0, "_partial": True, "_reason": str(e)})
+                    else:
+                        results[name] = {"_partial": True, "_reason": str(e)}
 
+        funding, basis = results.get("funding_basis") if isinstance(results.get("funding_basis"), tuple) else ({"rates": [], "avg_rate": float("nan"),
+                                                                                                                "last_funding_rate": float("nan"), "who_pays_now": None,
+                                                                                                                "mark_price": float("nan"), "index_price": float("nan"),
+                                                                                                                "snapshot_time": None},
+                                                                                                               {"basis_now": float("nan"), "basis_last_close": float("nan"),
+                                                                                                                "basis_then_open": float("nan"), "basis_change_abs": float("nan"), "bars": 0})
+
+        open_interest = results.get("open_interest", {})
+        flows = results.get("flows", {})
+        orderbook = results.get("orderbook", {})
+        x_perp = results.get("x_perp", {})
+        cal_basis = results.get("calendar_basis", {})
+        sent = results.get("sentiment", {})
+        breadth = results.get("breadth", {})
+        stables = results.get("stablecoins", {})
+        macro = results.get("macro", {})
+
+        # 3) Подсказки — как раньше
         hints: List[str] = []
         if open_interest and isinstance(open_interest.get("oi_change_pct"), float):
             if open_interest["oi_change_pct"] < 0:
