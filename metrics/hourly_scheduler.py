@@ -1,22 +1,26 @@
 # hourly_scheduler.py
-# Планировщик: каждый час в :57 ставит запуск двух задач и пишет JSON-строку в metrics.json.
-# В ФАЙЛ ЗАПИСЫВАЕТСЯ ТОЛЬКО РЕЗУЛЬТАТ task_two + поле time_utc. Устойчив к долгим задачам и ошибкам.
+# Планировщик: каждый час в :57 запускает асинхронную джобу и пишет JSON-строку в metrics.json.
+# В ФАЙЛ ЗАПИСЫВАЕТСЯ ТОЛЬКО РЕЗУЛЬТАТ task_two + поле time_utc (UTC ISO8601 с 'Z').
+# Устойчив к долгим задачам и ошибкам. Основной поток не блокируется.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from metrics.serv import map_time_to_score
+import helpers.tools as tools
+import helpers.tlg as tel
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import Future, TimeoutError as FutTimeoutError
 
-from helpers.safe_sender import safe_send
 from metrics.indicators import MarketIntel
 from metrics.score import score_snapshot
 
@@ -38,12 +42,10 @@ class RunReport:
     hour_started_local: str
     hour_ending_local: str
     elapsed_sec: float
-    task_one: Optional[Dict[str, Any]]
-    task_two: Optional[Dict[str, Any]]
-    status: str                 # "ok" | "error" | "skipped_overlap"
-    error: Optional[str] = None # Текст ошибки, если был сбой
+    status: str                 # "ok" | "error"
+    error: Optional[str] = None # текст ошибки (если была)
 
-# ------------------------------- ПУТИ/ФАЙЛ -----------------------------------
+# ------------------------------- УТИЛИТЫ/ПУТИ --------------------------------
 def _resolve_project_root() -> Path:
     """
     Определяем корень проекта:
@@ -68,26 +70,41 @@ def _append_json_line(file_path: Path, payload: Dict[str, Any]) -> None:
     with file_path.open("a", encoding="utf-8") as f:
         f.write(line + "\n")
 
-# ---------------------------- ВЫЧИСЛЕНИЕ ТРИГГЕРА ----------------------------
 def _next_trigger_57(now: datetime) -> datetime:
     """
     Ближайшее локальное время с минутой = 57 и секундами = 0.
     Если уже прошли :57 текущего часа — берём следующий час.
     """
-    target = now.replace(minute=55, second=0, microsecond=0)
+    target = now.replace(minute=53, second=0, microsecond=0)
     if now >= target:
-        target = (target + timedelta(hours=1)).replace(minute=55, second=0, microsecond=0)
+        target = (target + timedelta(hours=1)).replace(minute=53, second=0, microsecond=0)
     return target
 
 # ------------------------------ РЕАЛЬНЫЕ ЗАДАЧИ ------------------------------
-def task_one() -> Dict[str, Any]:
-    mi = MarketIntel()
-    snap = mi.snapshot(symbol="BTCUSDT", lookback_hours=2.0)
+# Оставлены как пример. Реальные вызовы внутри можно делать через await.
+# Если используете синхронные библиотеки — оборачивайте в asyncio.to_thread.
+
+async def task_one() -> Dict[str, Any]:
+    """
+    Пример: снимок рыночных метрик. Синхронный вызов завернут в to_thread, чтобы не блокировать loop.
+    """
+    def _sync_snapshot() -> Dict[str, Any]:
+        mi = MarketIntel()
+        return mi.snapshot(symbol="BTCUSDT", lookback_hours=2.0)
+
+    snap = await asyncio.to_thread(_sync_snapshot)
+    # Для отладки (можно заменить на _logger.debug):
     print(json.dumps(snap, ensure_ascii=False, indent=2))
     return snap
 
-def task_two(snap: Dict[str, Any]) -> Dict[str, Any]:
-    scored = score_snapshot(snap)
+async def task_two(snap: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Пример: вычисление скоринга. Синхронный вызов — в to_thread.
+    """
+    def _sync_score() -> Dict[str, Any]:
+        return score_snapshot(snap)
+
+    scored = await asyncio.to_thread(_sync_score)
     print(json.dumps(scored, ensure_ascii=False, indent=2))
     return scored
 
@@ -96,49 +113,114 @@ class SchedulerConfig:
     def __init__(
         self,
         metrics_filename: str = "metrics.json",
-        allow_overlap: bool = False,     # если True — допускаем параллельные часы
+        allow_overlap: bool = False,     # если True — допускаем параллельные запуски по часам
         warn_after_sec: int = 180,       # предупредить в лог, если выполнение > N сек
-        worker_max_workers: int = 1,     # пул потоков для задач (1 → без перекрытий внутри пула)
     ) -> None:
         self.project_root = _resolve_project_root()
         self.metrics_path = (self.project_root / metrics_filename).resolve()
         self.allow_overlap = allow_overlap
         self.warn_after_sec = max(1, int(warn_after_sec))
-        self.worker_max_workers = max(1, int(worker_max_workers))
 
-# ------------------------------ САМОТЕЛО СКЕДУЛЕРА ---------------------------
+# ------------------------------ СКЕДУЛЕР (ASYNC) -----------------------------
 class HourlyAt57Scheduler:
+    """
+    Архитектура:
+      - Поток А: "scheduler" — спит до :57 и по тику ставит задачу в event loop.
+      - Поток B: "asyncio-loop" — крутит asyncio loop, исполняет корутины.
+      - Основной поток приложения не блокируется.
+
+    Перекрытия:
+      - allow_overlap=False: если предыдущая задача ещё идёт — текущий тик пропускаем (в файл НЕ пишем).
+    """
     def __init__(self, config: Optional[SchedulerConfig] = None) -> None:
         self.cfg = config or SchedulerConfig()
         self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._executor = ThreadPoolExecutor(
-            max_workers=self.cfg.worker_max_workers,
-            thread_name_prefix="hourly_worker"
-        )
+
+        # Поток планировщика (:57)
+        self._sched_thread: Optional[threading.Thread] = None
+        # Поток с asyncio loop
+        self._loop_thread: Optional[threading.Thread] = None
+        self._loop_ready = threading.Event()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+        # Для контроля перекрытий
         self._last_future: Optional[Future] = None
-        self._lock = threading.Lock()  # защита от гонок при постановке задач
+        self._lock = threading.Lock()
 
     # ----------- Публичное API -----------
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+        if (self._sched_thread and self._sched_thread.is_alive()) or (self._loop_thread and self._loop_thread.is_alive()):
             _logger.warning("Планировщик уже запущен; повторный запуск проигнорирован.")
             return
+
+        # Запуск event loop в отдельном daemon-потоке
+        self._loop_thread = threading.Thread(target=self._loop_worker, name="hourly_asyncio_loop", daemon=True)
+        self._loop_thread.start()
+        # Ждём готовности loop
+        self._loop_ready.wait(timeout=5.0)
+        if not self._loop:
+            raise RuntimeError("Не удалось запустить asyncio event loop.")
+
+        # Запуск потока планировщика
         self._stop_event.clear()
-        _logger.info("Файл метрик: %s", self.cfg.metrics_path)
-        self._thread = threading.Thread(target=self._runner, name="hourly_57_scheduler", daemon=True)
-        self._thread.start()
-        _logger.info("Планировщик запущен. Триггер: каждый час в :57 (локальное время).")
+        self._sched_thread = threading.Thread(target=self._runner, name="hourly_57_scheduler", daemon=True)
+        self._sched_thread.start()
+
+        _logger.info("Планировщик запущен. Файл метрик: %s. Триггер: каждый час в :57 (локальное время).",
+                     self.cfg.metrics_path)
 
     def stop(self, join_timeout: Optional[float] = 3.0) -> None:
+        """
+        Мягкая остановка:
+          1) останавливаем расписание (:57),
+          2) ждём немного текущую задачу,
+          3) если задачи нет/завершилась — останавливаем loop;
+             иначе оставляем loop работать в daemon-потоке, чтобы не прервать задачу.
+        """
         self._stop_event.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=join_timeout)
-        # мягко глушим executor (не прерывает уже выполняющиеся задачи)
-        self._executor.shutdown(wait=False, cancel_futures=False)
+        if self._sched_thread and self._sched_thread.is_alive():
+            self._sched_thread.join(timeout=join_timeout)
+
+        # Если есть активная джоба — подождём немного её завершения
+        if self._last_future and not self._last_future.done():
+            try:
+                self._last_future.result(timeout=max(0.1, float(join_timeout or 0)))
+            except FutTimeoutError:
+                _logger.warning(
+                    "Задача ещё выполняется; оставляем event loop работать в daemon-потоке. "
+                    "Процесс завершится — поток завершится вместе с ним."
+                )
+                return  # не трогаем loop
+
+        # Без активных задач — можно останавливать loop
+        if self._loop:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._loop_thread and self._loop_thread.is_alive():
+            self._loop_thread.join(timeout=join_timeout)
         _logger.info("Планировщик остановлен.")
 
-    # ----------- Внутреннее -----------
+    # ----------- Поток с asyncio loop -----------
+    def _loop_worker(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._loop_ready.set()
+        try:
+            loop.run_forever()
+        except Exception:
+            _logger.exception("Необработанная ошибка в asyncio loop.")
+        finally:
+            try:
+                # Акуратно закрываем loop
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            finally:
+                loop.close()
+
+    # ----------- Поток планировщика (:57) -----------
     def _runner(self) -> None:
         try:
             while not self._stop_event.is_set():
@@ -153,120 +235,102 @@ class HourlyAt57Scheduler:
                 # Сработал часовой триггер
                 self._on_tick()
         except Exception:
-            _logger.exception("Необработанная ошибка в теле планировщика; он будет остановлен во избежание спама.")
+            _logger.exception("Необработанная ошибка в теле планировщика (:57).")
         finally:
             _logger.info("Выход из потока планировщика.")
 
     def _on_tick(self) -> None:
         """
-        Обработка одного тика (:57). Ставит выполнение задач в пул.
+        Обработка одного тика (:57). Ставит выполнение асинхронной работы в event loop.
         Контролирует перекрытия запусков по часам.
         """
         with self._lock:
-            if not self.cfg.allow_overlap and self._last_future and not self._last_future.done():
-                # Предыдущая часовая задача ещё идёт: пропускаем текущую (в файл НЕ пишем)
+            if (not self.cfg.allow_overlap) and self._last_future and not self._last_future.done():
                 _logger.warning("Пропуск запуска в :57 из-за перекрытия (allow_overlap=False).")
                 return
 
-            # Ставим новую работу в пул
-            future = self._executor.submit(self._run_job_once_safely)
-            # Подвешиваем коллбек на запись метрики по завершении
-            future.add_done_callback(self._on_job_done)
-            self._last_future = future
+            # Ставим корутину в event loop
+            fut = asyncio.run_coroutine_threadsafe(self._run_job_once_safely(), self._loop)
+            self._last_future = fut
 
-    def _run_job_once_safely(self) -> RunReport:
+    # ------------------------- ОСНОВНАЯ АСИНХРОННАЯ РАБОТА --------------------
+    async def _run_job_once_safely(self) -> RunReport:
         """
-        Исполняет две пользовательские задачи последовательно внутри рабочего потока.
-        Любая ошибка — в статус/лог; возврат RunReport.
+        Асинхронная джоба одного часа:
+          - последовательно выполняет task_one() и task_two(),
+          - любые исключения ловятся и логируются,
+          - в файл metrics.json пишется ТОЛЬКО результат task_two + time_utc (UTC).
         """
         started_local = datetime.now()
         hour_started = started_local.replace(minute=0, second=0, microsecond=0)
         hour_ending = hour_started + timedelta(hours=1)
         run_id = uuid.uuid4().hex
 
-        t1_res: Optional[Dict[str, Any]] = None
-        t2_res: Optional[Dict[str, Any]] = None
         status = "ok"
         err_text: Optional[str] = None
 
-        # Сторожок «долгого» выполнения (только предупреждение; ничего не прерывает)
-        def _watchdog(start_t: float) -> None:
-            while True:
-                time.sleep(1.0)
-                elapsed = time.time() - start_t
-                if elapsed > self.cfg.warn_after_sec:
-                    _logger.warning(
-                        "Долгое выполнение hourly job run_id=%s: %.0f сек (порог %d сек).",
-                        run_id, elapsed, self.cfg.warn_after_sec
-                    )
-                    return
-                if getattr(_wd_state, "done", False):
-                    return
+        # Сторожок: однократное предупреждение, если выполнение затянулось
+        async def _watchdog() -> None:
+            try:
+                await asyncio.sleep(self.cfg.warn_after_sec)
+                _logger.warning(
+                    "Долгое выполнение hourly job run_id=%s: > %d сек.",
+                    run_id, self.cfg.warn_after_sec
+                )
+            except asyncio.CancelledError:
+                # нормальное завершение сторожа
+                return
 
-        class _wd_state:
-            done = False
+        wd_task = asyncio.create_task(_watchdog(), name=f"hourly_watchdog_{run_id}")
 
-        wd_thread = threading.Thread(
-            target=_watchdog,
-            args=(time.time(),),
-            name=f"hourly_watchdog_{run_id}",
-            daemon=True
-        )
-        wd_thread.start()
-
+        # Основная логика
         try:
             _logger.info("Запуск hourly job run_id=%s на %s", run_id, started_local)
-            t1_res = task_one() or {}
-            t2_res = task_two(t1_res) or {}
+
+            # 1) task_one (await)
+            t1_res: Dict[str, Any] = await task_one()
+
+            # 2) task_two (await)
+            t2_res: Dict[str, Any] = await task_two(t1_res)
+
+            minify_dict = map_time_to_score([t2_res])
+            pretty_str = tools.dict_to_pretty_string(minify_dict)
+            await tel.send_inform_message("COLLECTOR_API", f"{pretty_str}", "", False)
+            # 3) Пишем в файл ТОЛЬКО результат task_two + time_utc (UTC)
+            payload: Dict[str, Any] = dict(t2_res) if isinstance(t2_res, dict) else {"result": t2_res}
+            payload["time_utc"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+            try:
+                _append_json_line(self.cfg.metrics_path, payload)
+                _logger.info("Метрика записана (%s). Только task_two + time_utc.", self.cfg.metrics_path)
+            except Exception as write_exc:
+                status = "error"
+                err_text = f"WriteError: {type(write_exc).__name__}: {write_exc}"
+                _logger.exception("Не удалось записать метрику в %s", self.cfg.metrics_path)
+
         except Exception as exc:
             status = "error"
             err_text = f"{type(exc).__name__}: {exc}"
             _logger.exception("Ошибка в hourly job run_id=%s", run_id)
         finally:
-            _wd_state.done = True
+            # Останавливаем сторожок
+            wd_task.cancel()
+            try:
+                await wd_task
+            except Exception:
+                pass
 
         elapsed = (datetime.now() - started_local).total_seconds()
-        report = RunReport(
+        return RunReport(
             run_id=run_id,
             ts_local=started_local.isoformat(timespec="seconds"),
             ts_utc=datetime.utcnow().isoformat(timespec="seconds") + "Z",
             hour_started_local=hour_started.isoformat(timespec="seconds"),
             hour_ending_local=hour_ending.isoformat(timespec="seconds"),
             elapsed_sec=elapsed,
-            task_one=t1_res,
-            task_two=t2_res,
             status=status,
             error=err_text,
         )
-        return report
-
-    def _on_job_done(self, fut: Future) -> None:
-        """
-        Коллбек по завершении работы: в файл пишем ТОЛЬКО результат task_two + time_utc.
-        Коллбек сам по себе «пулезащищён»: не валит процесс при сбое.
-        """
-        try:
-            report = fut.result()
-            # Берём только результат task_two.
-            if isinstance(report.task_two, dict):
-                payload: Dict[str, Any] = dict(report.task_two)  # копия
-            else:
-                # На случай, если вернули не словарь — аккуратно упакуем.
-                payload = {"result": report.task_two}
-
-            # Добавляем UTC-метку сохранения (требование пользователя).
-            payload["time_utc"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-
-            _append_json_line(self.cfg.metrics_path, payload)
-            _logger.info(
-                "Метрика записана (%s). Только task_two + time_utc. elapsed=%.1f сек, статус=%s",
-                self.cfg.metrics_path, report.elapsed_sec, report.status
-            )
-        except Exception as exc:
-            _logger.exception(
-                "Коллбек завершения hourly job: не удалось записать метрику (%s): %s",
-                self.cfg.metrics_path, exc
-            )
 
 # ------------------------------ УДОБНЫЕ ОБЁРТКИ ------------------------------
 _scheduler: Optional[HourlyAt57Scheduler] = None
@@ -275,14 +339,14 @@ def start_hourly_57_scheduler(
     metrics_filename: str = "metrics.json",
     allow_overlap: bool = False,
     warn_after_sec: int = 180,
-    worker_max_workers: int = 1,
+    # параметр worker_max_workers больше не используется (async-версия), оставлен для совместимости
+    worker_max_workers: int = 1,  # noqa: ARG002  (сохранён для обратной совместимости)
 ) -> None:
     """
     Упрощённый запуск планировщика.
     - metrics_filename: имя файла метрик в корне проекта (JSONL: по одной строке на час)
     - allow_overlap: разрешить ли перекрытие запусков, если предыдущий ещё идёт
     - warn_after_sec: через сколько секунд выполнения вывести предупреждение
-    - worker_max_workers: размер пула потоков задач (1 — без перекрытий внутри пула)
     """
     global _scheduler
     if _scheduler:
@@ -292,7 +356,6 @@ def start_hourly_57_scheduler(
         metrics_filename=metrics_filename,
         allow_overlap=allow_overlap,
         warn_after_sec=warn_after_sec,
-        worker_max_workers=worker_max_workers,
     )
     _scheduler = HourlyAt57Scheduler(cfg)
     _scheduler.start()
@@ -302,5 +365,4 @@ def stop_hourly_57_scheduler(join_timeout: Optional[float] = 3.0) -> None:
     if _scheduler:
         _scheduler.stop(join_timeout=join_timeout)
         _scheduler = None
-
 
