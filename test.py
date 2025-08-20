@@ -18,6 +18,8 @@ from database.hist_trades import Trade
 from database.simulation import Simulation
 from commander.service import format_trades_report
 from metrics.hourly_scheduler import start_hourly_57_scheduler
+from openai import OpenAI
+from decouple import config
 
 START_DATE  = "01-01-2024"
 END_DATE    = "01-01-2025"
@@ -42,16 +44,66 @@ perc_t = [0.025, 0.03, 0.04, 0.05]
 perc_tp = [0.02, 0.025, 0.03, 0.04]
 
 
+#!/usr/bin/env python3
+# example_collect_news.py
+# Минимальный запуск: собрать и распечатать новости
 
-async def main():
-    start_hourly_57_scheduler(
-        metrics_filename="metrics.json",
-        allow_overlap=False,
-        warn_after_sec=240,
-        worker_max_workers=1
+from metrics.market_watch import collect_news
+
+async def main() -> None:
+    api = config('DEEPSEEK_API')
+    client = OpenAI(api_key=api, base_url="https://api.deepseek.com")
+    # Собираем новости с дефолтных лент (crypto + finance), горизонтом 24ч
+    news = collect_news(
+        horizon_hours=24,          # можно изменить при желании
+        max_items_per_feed=40,     # ограничение на каждый фид
+        max_summary_chars=260      # длина краткого описания
     )
-    while True:
-       await asyncio.sleep(2)
+
+    # Печатаем
+    print(f"Всего новостей: {len(news)}\n")
+    print(news)
+    # for i, n in enumerate(news, 1):
+    #     print(f"{i:03d}. [{n.category}/{n.source}] {n.title}")
+    #     print(f"     Время:  {n.published_utc}")
+    #     print(f"     Кратко: {n.summary_short}")
+    #     print(f"     Ссылка: {n.url}\n")
+    
+    dt = datetime.now(timezone.utc)
+    prompt = f'''Your task is to analyze the list of these news items. 
+    Each news item should be assigned a weight on a seven-point scale from 1 to 7 depending on how important it is for the next few hours 2-5 hours in terms of its impact on the cryptocurrency market. 
+    Also look at how long ago it was released. Today is now {dt}. After that, analyze each news item, is it positive for BTC growth or negative, and sum up all the points, plus if positive, minus if negative, and finally give me the final assessment in the format json "score": val '''
+    response = client.chat.completions.create(
+        model="deepseek-reasoner",
+        messages=[
+            {"role": "system", "content": "You are a financial analyst of crypto markets"},
+            {"role": "user", "content": f"{prompt}\n\n{str(news)}"},
+        ],
+        stream=False
+    )
+    print(response)
+# async def main():
+#     api = config('DEEPSEEK_API')
+#     client = OpenAI(api_key=api, base_url="https://api.deepseek.com")
+
+#     response = client.chat.completions.create(
+#         model="deepseek-reasoner",
+#         messages=[
+#             {"role": "system", "content": "You are a helpful assistant"},
+#             {"role": "user", "content": "Hello"},
+#         ],
+#         stream=False
+#     )
+
+#     print(response.choices[0].message.content)
+    # start_hourly_57_scheduler(
+    #     metrics_filename="metrics.json",
+    #     allow_overlap=False,
+    #     warn_after_sec=240,
+    #     worker_max_workers=1
+    # )
+    # while True:
+    #    await asyncio.sleep(2)
     # fut_full_amt = (0.005*2)
     # fut_amt = tools.qty_for_target_profit(115440, 0.0153, 6.15*2*1.10)
     # second_stage_qty = fut_full_amt - fut_amt

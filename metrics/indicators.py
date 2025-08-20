@@ -4,6 +4,8 @@ intel.py — безопасный сборщик рыночных сигнало
 
 Что внутри:
 - Дисковый кэш (persist): .intel_cache/ (можно сменить переменной INTEL_CACHE_DIR).
+- Авто-фолбэк кэша на ~/.intel_cache_tbot → /var/tmp/intel_cache_tbot → /tmp/intel_cache_tbot.
+- Длинные TTL для перекрывающихся окон (aggTrades/klines) — reuse между часовыми запусками.
 - Stale-while-revalidate: при сетевой ошибке отдаём последнюю копию из кэша.
 - Потокобезопасные FileCache, RateLimiter и Http (Session с пулом соединений).
 - Параллелизация независимых блоков snapshot() с соблюдением лимитов хостов.
@@ -17,7 +19,6 @@ intel.py — безопасный сборщик рыночных сигнало
 from __future__ import annotations
 
 import os
-import io
 import sys
 import time
 import json
@@ -26,7 +27,7 @@ import random
 import hashlib
 import threading
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
@@ -40,10 +41,10 @@ from requests.adapters import HTTPAdapter
 # =========================
 
 CACHE_DIR = os.environ.get("INTEL_CACHE_DIR", ".intel_cache")
-CACHE_CLEAN_PROB = float(os.environ.get("INTEL_CACHE_CLEAN_PROB", "0.02"))  # 2% шансов чистить протухшее при каждом сохранении
+CACHE_CLEAN_PROB = float(os.environ.get("INTEL_CACHE_CLEAN_PROB", "0.02"))  # 2% шанс чистить протухшее при каждом сохранении
 
 # Конкурентность сборки снапшота
-INTEL_CONCURRENCY = int(os.environ.get("INTEL_CONCURRENCY", "6"))
+INTEL_CONCURRENCY = int(os.environ.get("INTEL_CONCURRENCY", "2"))
 
 # Таймауты HTTP
 HTTP_CONNECT_TIMEOUT = float(os.environ.get("INTEL_HTTP_CONNECT_TIMEOUT", "5.0"))
@@ -57,7 +58,7 @@ MIN_GAP_PER_HOST = {
     "www.okx.com": 0.25,
     "www.deribit.com": 0.25,
     "stooq.com": 0.50,
-    "stooq.pl": 0.50,   # добавили fallback-хост
+    "stooq.pl": 0.50,
 }
 
 # Максимум «условных весов» на 60 секунд
@@ -68,7 +69,7 @@ MAX_WEIGHT_PER_MIN = {
     "www.okx.com": 120,
     "www.deribit.com": 120,
     "stooq.com": 60,
-    "stooq.pl": 60,  # для fallback-хоста
+    "stooq.pl": 60,
 }
 
 def endpoint_weight(host: str, path: str) -> int:
@@ -90,69 +91,93 @@ def endpoint_weight(host: str, path: str) -> int:
     return 1
 
 def endpoint_ttl_seconds(host: str, path: str, params: Dict[str, Any]) -> int:
+    """TTL увеличены так, чтобы часовые запуски реально переиспользовали кэш."""
     p = path.lower()
     # Stooq snapshot
     if (host.endswith("stooq.com") or host.endswith("stooq.pl")) and p.startswith("/q/l"):
-        return 180  # ES/NQ/DXY можно кэшировать 3 минуты
+        return 300  # 5 минут
     # Binance breadth
     if p.endswith("/api/v3/ticker/24hr"):
-        return 90
+        return 120  # 2 минуты
     # Ratios / OI
     if "/futures/data/" in p:
-        if "openinterest" in p:
-            return 60
-        return 60
+        return 600  # 10 минут
     # Klines (index/continuous/premiumIndexKlines)
     if p.endswith("/fapi/v1/indexpriceklines") or p.endswith("/fapi/v1/continuousklines"):
-        return 60
+        return 3600  # 1 час
     if p.endswith("/fapi/v1/premiumindexklines"):
-        return 60
+        return 3600  # 1 час
     # Premium index (mark/index/funding)
     if p.endswith("/fapi/v1/premiumindex"):
-        return 10
+        return 20
     # Spot price (стейблы)
     if p.endswith("/api/v3/ticker/price"):
-        return 10
+        return 30
     # Depth
     if p.endswith("/api/v3/depth"):
-        return 2
+        return 5
     # Futures/spot klines
     if p.endswith("/fapi/v1/klines"):
-        return 30
-    # AggTrades — кэшируем те же окна
+        return 3600  # 1 час
+    # AggTrades — кэшируем на 2 часа для межчасового reuse
     if p.endswith("/api/v3/aggtrades") or p.endswith("/fapi/v1/aggtrades"):
-        return 180
+        return 7200  # 2 часа
     # Остальное
-    return 15
+    return 60
 
 
 # =========================
-# Дисковый кэш (потокобезопасный)
+# Дисковый кэш (потокобезопасный + авто-фолбэк)
 # =========================
 
 class FileCache:
     def __init__(self, root: str = CACHE_DIR):
-        self.root = root
         self._lock = threading.Lock()
-        try:
-            os.makedirs(self.root, exist_ok=True)
-        except Exception:
+        # 1) Пробуем указанный путь
+        root = self._ensure_writable(root)
+        # 2) Если нет — фолбэки
+        if root is None:
+            for alt in (
+                os.path.expanduser("~/.intel_cache_tbot"),
+                "/var/tmp/intel_cache_tbot",
+                "/tmp/intel_cache_tbot",
+            ):
+                root = self._ensure_writable(alt)
+                if root:
+                    break
+        # 3) Если совсем никак — кэш будет «пустым»
+        self.root = root or ""
+        if not self.root:
+            # Важно: продолжаем работу без кэша (это лучше, чем падать)
             pass
+
+    def _ensure_writable(self, path: str) -> Optional[str]:
+        try:
+            if not path:
+                return None
+            os.makedirs(path, exist_ok=True)
+            testfile = os.path.join(path, ".write_test")
+            with open(testfile, "w", encoding="utf-8") as f:
+                f.write("ok")
+            os.remove(testfile)
+            return path
+        except Exception:
+            return None
 
     @staticmethod
     def _key_to_name(key: str) -> str:
         h = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return f"{h}.json"
 
-    def _path_for(self, key: str) -> str:
+    def _path_for(self, key: str) -> Optional[str]:
+        if not self.root:
+            return None
         return os.path.join(self.root, self._key_to_name(key))
 
     def get_with_meta(self, key: str) -> Tuple[Optional[Any], bool]:
-        """
-        Возвращает (value, is_expired). Не удаляет протухшие файлы — это даёт
-        возможность stale-fallback при сетевой ошибке.
-        """
         path = self._path_for(key)
+        if not path:
+            return None, True
         try:
             with self._lock:
                 with open(path, "r", encoding="utf-8") as f:
@@ -174,6 +199,8 @@ class FileCache:
 
     def set(self, key: str, value: Any, ttl_seconds: int, ctype: str):
         path = self._path_for(key)
+        if not path:
+            return  # кэш выключен (нет доступного каталога)
         obj = {
             "expires": time.time() + max(1, int(ttl_seconds)),
             "ctype": ctype,
@@ -196,6 +223,8 @@ class FileCache:
             self._cleanup()
 
     def _cleanup(self):
+        if not self.root:
+            return
         now = time.time()
         try:
             with self._lock:
@@ -265,7 +294,6 @@ class RateLimiter:
                         self._win_weight += weight
                         self._last_ts = now
                         sleep_for = 0.0
-                # выходим из критической секции
             if sleep_for > 0.0:
                 time.sleep(min(sleep_for, 5.0))
                 continue
@@ -299,7 +327,7 @@ class Http:
     def __init__(self, base_url: str, cache: FileCache):
         self.base = base_url.rstrip("/")
         self.s = requests.Session()
-        # Пул соединений для многопоточности
+        # Пул соединений для многопоточности / keep-alive
         adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100, max_retries=0)
         self.s.mount("https://", adapter)
         self.s.mount("http://", adapter)
@@ -325,7 +353,6 @@ class Http:
         self._io_lock = threading.Lock()  # Session.get — под замком для чистоты потоков
 
     def _make_key(self, path: str, params: Optional[Dict[str, Any]]) -> str:
-        # нормализуем параметры: сортировка, выбрасываем None
         q = ""
         if params:
             p2 = {k: v for k, v in params.items() if v is not None}
@@ -404,7 +431,6 @@ BINANCE_FAPI = "https://fapi.binance.com"
 BYBIT = "https://api.bybit.com"
 OKX = "https://www.okx.com"
 DERIBIT = "https://www.deribit.com"
-# Несколько баз для Stooq (fallback)
 STOOQ_BASES = ["https://stooq.com", "https://stooq.pl"]
 
 class BinancePublic:
@@ -420,7 +446,8 @@ class BinancePublic:
         return self.fapi.get("/fapi/v1/premiumIndex", {"symbol": symbol} if symbol else {})
 
     def fapi_premium_index_klines(self, symbol: str, interval: str, start_time: int, end_time: int, limit: int = 500) -> List[list]:
-        return self.fapi.get("/fapi/v1/premiumIndexKlines", {"symbol": symbol, "interval": interval, "startTime": start_time, "EndTime": end_time, "limit": limit})
+        # Важно: endTime (не EndTime)
+        return self.fapi.get("/fapi/v1/premiumIndexKlines", {"symbol": symbol, "interval": interval, "startTime": start_time, "endTime": end_time, "limit": limit})
 
     def fapi_continuous_klines(self, pair: str, contract_type: str, interval: str, start_time: int, end_time: int, limit: int = 500) -> List[list]:
         return self.fapi.get("/fapi/v1/continuousKlines", {"pair": pair, "contractType": contract_type, "interval": interval, "startTime": start_time, "endTime": end_time, "limit": limit})
@@ -510,7 +537,6 @@ class DeribitPublic:
 
 class StooqPublic:
     def __init__(self, cache: FileCache):
-        # несколько клиентов на разные базы (fallback)
         self.clients = [Http(base, cache) for base in STOOQ_BASES]
 
     def _try_one(self, http: Http, symbol: str) -> Optional[Dict[str, Any]]:
@@ -549,7 +575,6 @@ class StooqPublic:
             except Exception as e:
                 last_err = e
                 continue
-        # если не удалось и кэша не было (Http сам вернёт stale при наличии) — вернём пустой
         return {"symbol": symbol.upper(), "valid": False, "_partial": True, "_reason": (str(last_err) if last_err else "unavailable")}
 
 
@@ -674,12 +699,6 @@ class MarketIntel:
 
     # --- Кэш-дружественный сбор aggTrades ---
     def _collect_agg_trades_safe(self, fetch_fn, symbol: str, lookback_hours: float) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        """
-        Делим окно на «стабильные» куски по границам минут: chunk_ms = 5 минут.
-        Каждый кусок -> один запрос с startTime/endTime. Такой разрез хорошо кэшируется
-        между повторными вызовами (с тем же lookback). При «плотных» кусках переходим
-        на более мелкий под-кусок (2.5м / 1м) — но в рамках бюджета вызовов.
-        """
         end_ms = _now_ms()
         start_ms = end_ms - int(lookback_hours * 3_600_000)
 
@@ -708,14 +727,12 @@ class MarketIntel:
             if calls_made >= self.max_agg_calls_per_side:
                 partial = True
                 break
-            # основной запрос по куску
             page = fetch_fn(symbol, start_time=a, end_time=b, limit=1000) or []
             results.extend(page); calls_made += 1
             time.sleep(random.uniform(*self.agg_throttle_range))
 
             n = len(page)
             if n >= 1000 and size_ms > MIN_UNIT and calls_made < self.max_agg_calls_per_side:
-                # Плотно — достраиваем двумя под-кусами (делим пополам), чтобы добрать «верх»
                 mid = a + size_ms // 2
                 sub1 = fetch_fn(symbol, start_time=a,   end_time=mid, limit=1000) or []
                 results.extend(sub1); calls_made += 1
@@ -724,9 +741,7 @@ class MarketIntel:
                     sub2 = fetch_fn(symbol, start_time=mid, end_time=b,   limit=1000) or []
                     results.extend(sub2); calls_made += 1
                     time.sleep(random.uniform(*self.agg_throttle_range))
-                # Если дальше снова 1000+ — мы НЕ уходим глубже (чтобы не сжечь бюджет).
-                # В следующий прогон этот участок всё равно будет прочитан из кэша.
-        # Жёсткий фильтр по окну
+
         results = [t for t in results if int(t.get("T") or t.get("time") or 0) >= start_ms]
         meta = {"_calls_made": calls_made, "_max_calls": self.max_agg_calls_per_side, "_partial": partial,
                 "_window_ms": (end_ms - start_ms)}
@@ -902,13 +917,13 @@ class MarketIntel:
         def lean(s: Optional[str]) -> int: return 1 if s == "up" else -1 if s == "down" else 0
         return {"ES": es, "NQ": nq, "DXY": dx, "macro_lean_score": lean(es.get("sense")) + lean(nq.get("sense")) - lean(dx.get("sense"))}
 
-    # ---- Компоновка со строгой параллелизацией ----
+    # ---- Компоновка ----
 
     def snapshot(self, symbol: str = "BTCUSDT", lookback_hours: float = 2.0, asof_utc: Optional[datetime] = None) -> Dict[str, Any]:
         if asof_utc is None:
             asof_utc = datetime.now(timezone.utc)
 
-        # 1) Сначала быстрый ценовой блок (нужен для orderbook mid)
+        # 1) Быстрый ценовой блок (нужен для orderbook mid)
         price = self.price_block(symbol, lookback_hours, interval="5m")
 
         # 2) Параллельно остальное (независимые блоки)
@@ -930,7 +945,6 @@ class MarketIntel:
                 try:
                     results[name] = fut.result()
                 except Exception as e:
-                    # сохраняем совместимый по схеме тип либо пустой/частичный
                     if name == "funding_basis":
                         results[name] = ({"rates": [], "avg_rate": float("nan"),
                                           "last_funding_rate": float("nan"), "who_pays_now": None,
