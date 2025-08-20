@@ -105,8 +105,8 @@ def map_time_to_score(items: List[Dict[str, Any]]) -> Dict[str, float]:
             raise ValueError(f"Item #{idx}: invalid time_utc '{t_str}'") from e
 
         # Формат 'YY-MM-DD HH:MM:SS'
-        key = dt.strftime("%y-%m-%d %H:%M:%S")
-        out[key] = f'market: {score} | news: {news_score}'
+        key = dt.strftime("%y-%m-%d %H:%M")
+        out[key] = f'mk: {round(score, 2)} | ns: {news_score/100}'
 
     return out
 
