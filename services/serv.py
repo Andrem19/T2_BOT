@@ -70,6 +70,7 @@ async def refresh_commands_from_bd():
         sv.stages['simulation']['fut_perc_p'] = com.fut_perc_p
         sv.perc_wing_1 = com.perc_wing_1
         sv.perc_wing_2 = com.perc_wing_2
+        sv.partial_pos = com.partial_pos
         sv.timer_msg = com.timer
         sv.close_1 = com.close_1
         sv.close_2 = com.close_2

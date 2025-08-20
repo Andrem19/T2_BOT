@@ -252,6 +252,7 @@ close_2 = False
 perc_wing_1 = 0.001
 perc_wing_2 = 0.001
 simulation = True
+partial_pos = True
 opt_types = ['put', 'call']
 
 data_path_sol = "../MARKET_DATA/_crypto_data/SOLUSDT/SOLUSDT_1m.csv"

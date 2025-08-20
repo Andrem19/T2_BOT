@@ -29,6 +29,14 @@ class Commands(BaseModel):
     exp_correct: float = -2.0
     perc_wing_1: float = 0.001
     perc_wing_2: float = 0.001
+    partial_pos: bool = True
+
+    @classmethod
+    def set_partial_pos(cls, value: bool):
+        inst = cls.get_instance()
+        inst.partial_pos = value
+        inst.save()
+        return inst
     
     @classmethod
     def set_perc_wing_1(cls, value: float):

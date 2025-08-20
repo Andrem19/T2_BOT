@@ -32,7 +32,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
         fut_full_amt = (position['qty']*sv.stages[which_pos_we_need]['amount'])
         fut_amt = tools.qty_for_target_profit(currentPx, tp_perc, position['ask']*sv.stages[which_pos_we_need]['amount']*1.15)
         second_stage_qty = fut_full_amt - fut_amt
-        if second_stage_qty < 0.001:
+        if second_stage_qty < 0.001 or not sv.partial_pos:
             fut_amt = fut_full_amt
 
         new_position = HL.open_limit_post_only(symbol, side, 0, False, fut_amt, acc, max_wait_cycles=4)
@@ -57,7 +57,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
             HL.open_TP_position(symbol, side, entry_px, tp_px+0.001, acc)
             logger.info(f"{which_pos_we_need} Take Profit opened.")
             
-            if second_stage_qty >= 0.001:
+            if second_stage_qty >= 0.001 and sv.partial_pos:
                 need_dist = position['lower_perc']*0.30 if side == 'Buy' else position['upper_perc']*0.30
                 
                 add_price = entry_px * (1+need_dist) if side == 'Sell' else entry_px * (1-need_dist)
@@ -65,7 +65,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
                 HL.place_limit_post_only(symbol, side, add_price, 0, second_stage_qty, False, acc)
                 logger.info(f"{which_pos_we_need} add position order is opened")
             else:
-                logger.info(f"{which_pos_we_need} quantity to small for add order {second_stage_qty}")
+                logger.info(f"{which_pos_we_need} quantity to small for add order {second_stage_qty} partial_pos is {sv.partial_pos}")
             
             open_time = HL.get_open_time(symbol, acc)
             sv.stages[which_pos_we_need]['position']['open_time'] = open_time

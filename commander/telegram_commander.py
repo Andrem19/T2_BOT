@@ -30,6 +30,14 @@ from metrics.serv import read_last_metrics, map_time_to_score, extract_scores_by
 # ---------------------------------------------------------------------------
 # Команды
 # ---------------------------------------------------------------------------
+
+async def part(val: str):
+    try:
+        Commands.set_partial_pos(int(val))
+        await tel.send_inform_message("COLLECTOR_API", f"partial_pos: {val}", "", False)
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
+
 async def score(hours: str):
     try:
         items = read_last_metrics(int(hours), path="metrics.json")
@@ -274,6 +282,7 @@ def init_commander():
     sv.commander.add_command(["types"], types)
     sv.commander.add_command(["mode"], aloud_mode)
     sv.commander.add_command(["cor"], exp_cor)
+    sv.commander.add_command(["part"], part)
     sv.commander.add_command(["tail"], tail)
     sv.commander.add_command(["wings"], wings)
     sv.commander.add_command(["day"], day)
