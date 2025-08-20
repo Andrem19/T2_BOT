@@ -4,6 +4,7 @@ import json
 import re
 import hashlib
 import os
+import asyncio
 from datetime import datetime, timezone
 from metrics.market_watch import collect_news
 from helpers.safe_sender import safe_send
@@ -118,7 +119,6 @@ async def news_metric():
         Each news item should be assigned a weight on a seven-point scale from 1 to 7 depending on how important it is for the next few hours 2-5 hours in terms of its impact on the cryptocurrency market. 
         Also look at how long ago it was released. Today is now {dt_now}. After that, analyze each news item, is it positive for BTC growth or negative, and sum up all the points, plus if positive, minus if negative, and finally give me the final assessment in the format json "score": val '''
 
-
         def _call_reasoner(model_name: str):
             return client_ds.chat.completions.create(
                 model=model_name,
@@ -148,6 +148,21 @@ async def news_metric():
                 ],
                 stream=False,
             )
+
+        # --- универсальная обёртка: 60с таймаут, 2 попытки, далее фолбэк ---
+        async def _call_with_timeout_twice(callable_fn, label: str):
+            for attempt in (1, 2):
+                try:
+                    # выполняем блокирующий SDK-вызов в отдельном потоке с таймаутом 60с
+                    return await asyncio.wait_for(asyncio.to_thread(callable_fn), timeout=60.0)
+                except asyncio.TimeoutError:
+                    sv.logger.warning("%s timed out after 60s (attempt %d/2)", label, attempt)
+                    if attempt == 2:
+                        sv.logger.warning("%s timed out twice — moving to fallback", label)
+                        return None
+                except Exception as e:
+                    # не таймаут — пробрасываем наружу, чтобы сработал существующий catch и логика фолбэков
+                    raise e
 
         def _parse_score(text: str):
             if not text:
@@ -194,24 +209,28 @@ async def news_metric():
             sv.logger.info("Нет новых новостей: использован кэш.")
             return final_data
 
-        # Иначе — прогоняем как раньше (reasoner → openai → chat)
+        # Иначе — прогоняем как раньше (reasoner → openai → chat), но с таймаутами/повтором
         try:
-            resp = _call_reasoner("deepseek-reasoner")
-            choice = resp.choices[0] if resp.choices else None
-            raw = (getattr(choice.message, "content", None) or "").strip() if choice else ""
-            sv.logger.info("DeepSeek-reasoner finish_reason=%s", getattr(choice, "finish_reason", None) if choice else None)
-            parsed, raw_json = _parse_score(raw)
-            if parsed:
-                used_model = "deepseek:deepseek-reasoner"
-                final_data = parsed
-                final_raw  = raw
+            resp = await _call_with_timeout_twice(lambda: _call_reasoner("deepseek-reasoner"), "deepseek-reasoner")
+            if resp is not None:
+                choice = resp.choices[0] if resp.choices else None
+                raw = (getattr(choice.message, "content", None) or "").strip() if choice else ""
+                sv.logger.info("DeepSeek-reasoner finish_reason=%s", getattr(choice, "finish_reason", None) if choice else None)
+                parsed, raw_json = _parse_score(raw)
+                if parsed:
+                    used_model = "deepseek:deepseek-reasoner"
+                    final_data = parsed
+                    final_raw  = raw
         except Exception as e:
             sv.logger.warning("DeepSeek-reasoner error: %s", e)
 
         if not final_data and client_oa:
             for mdl in openai_candidates:
                 try:
-                    resp_oa = _call_openai(mdl)
+                    resp_oa = await _call_with_timeout_twice(lambda: _call_openai(mdl), f"openai:{mdl}")
+                    if resp_oa is None:
+                        # обе попытки по таймауту — пробуем следующий кандидат
+                        continue
                     ch = resp_oa.choices[0] if resp_oa.choices else None
                     raw_oa = (getattr(ch.message, "content", None) or "").strip() if ch else ""
                     sv.logger.info("OpenAI %s finish_reason=%s", mdl, getattr(ch, "finish_reason", None) if ch else None)
@@ -232,15 +251,16 @@ async def news_metric():
 
         if not final_data:
             try:
-                resp_c = _call_deepseek_chat()
-                ch2 = resp_c.choices[0] if resp_c.choices else None
-                raw_c = (getattr(ch2.message, "content", None) or "").strip() if ch2 else ""
-                sv.logger.info("DeepSeek-chat finish_reason=%s", getattr(ch2, "finish_reason", None) if ch2 else None)
-                parsed, raw_json = _parse_score(raw_c)
-                if parsed:
-                    used_model = "deepseek:deepseek-chat"
-                    final_data = parsed
-                    final_raw  = raw_c
+                resp_c = await _call_with_timeout_twice(_call_deepseek_chat, "deepseek-chat")
+                if resp_c is not None:
+                    ch2 = resp_c.choices[0] if resp_c.choices else None
+                    raw_c = (getattr(ch2.message, "content", None) or "").strip() if ch2 else ""
+                    sv.logger.info("DeepSeek-chat finish_reason=%s", getattr(ch2, "finish_reason", None) if ch2 else None)
+                    parsed, raw_json = _parse_score(raw_c)
+                    if parsed:
+                        used_model = "deepseek:deepseek-chat"
+                        final_data = parsed
+                        final_raw  = raw_c
             except Exception as e:
                 sv.logger.warning("DeepSeek-chat error: %s", e)
 
@@ -275,8 +295,6 @@ async def news_metric():
     except Exception as e:
         sv.logger.exception("%s", e)
         await safe_send('TELEGRAM_API', f'News Analyzer error: {e}', '', False)
-
-
 
 
 

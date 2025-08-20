@@ -30,7 +30,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
         side = 'Buy' if position['type'] == 'put' else 'Sell'
         tp_perc = position['upper_perc'] if side == 'Buy' else position['lower_perc']
         fut_full_amt = (position['qty']*sv.stages[which_pos_we_need]['amount'])
-        fut_amt = tools.qty_for_target_profit(currentPx, tp_perc, position['ask']*sv.stages[which_pos_we_need]['amount']*1.15)
+        fut_amt = tools.qty_for_target_profit(currentPx, tp_perc, position['ask']*sv.stages[which_pos_we_need]['amount']*1.20)
         second_stage_qty = fut_full_amt - fut_amt
         if second_stage_qty < 0.001 or not sv.partial_pos:
             fut_amt = fut_full_amt
@@ -59,7 +59,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
             logger.info(f"{which_pos_we_need} Take Profit opened.")
             
             if second_stage_qty >= 0.001 and sv.partial_pos:
-                need_dist = position['lower_perc']*0.30 if side == 'Buy' else position['upper_perc']*0.30
+                need_dist = position['lower_perc']*0.35 if side == 'Buy' else position['upper_perc']*0.35
                 
                 add_price = entry_px * (1+need_dist) if side == 'Sell' else entry_px * (1-need_dist)
                 sv.stages[which_pos_we_need]['position']['second_stage_px'] = add_price
