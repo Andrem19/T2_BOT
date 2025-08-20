@@ -76,9 +76,9 @@ def _next_trigger_57(now: datetime) -> datetime:
     Ближайшее локальное время с минутой = 57 и секундами = 0.
     Если уже прошли :57 текущего часа — берём следующий час.
     """
-    target = now.replace(minute=12, second=0, microsecond=0)
+    target = now.replace(minute=50, second=0, microsecond=0)
     if now >= target:
-        target = (target + timedelta(hours=1)).replace(minute=12, second=0, microsecond=0)
+        target = (target + timedelta(hours=1)).replace(minute=50, second=0, microsecond=0)
     return target
 
 # ------------------------------ РЕАЛЬНЫЕ ЗАДАЧИ ------------------------------
