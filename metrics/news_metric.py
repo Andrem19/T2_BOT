@@ -7,142 +7,228 @@ from metrics.market_watch import collect_news
 from helpers.safe_sender import safe_send
 import shared_vars as sv
 
+from openai import OpenAI
+from decouple import config
+import json
+import re
+from datetime import datetime, timezone
+from metrics.market_watch import collect_news
+from helpers.safe_sender import safe_send
+import shared_vars as sv
+
+
 async def news_metric():
     """
-    Анализ новостей с гарантированным JSON-выводом.
-    Усиления:
-      • JSON-mode через response_format={"type":"json_object"}.
-      • Два режима:
-          – Дешёвые часы (UTC 16–23 и 00): подробный JSON {"score", "details":[...]}.
-          – Дорогие часы (UTC 01–15): минимальный JSON {"score": N}.
-      • Новости передаются как JSON.
-      • Надёжный парсинг + fallback: если deepseek-reasoner вернул пусто, пробуем deepseek-chat.
-      • Ни при каких условиях не прокидываем reasoning_content в следующий запрос.
+    Итоговый конвейер:
+      1) deepseek-reasoner (без max_tokens/stop/response_format, как в рабочем исходнике)
+      2) OpenAI (без Verify Org): gpt-4o → gpt-4.1 → o3-mini
+      3) deepseek-chat
+    В модель отправляем только нужное: title + published_utc (возраст). В COLLECTOR — сырой ответ.
     """
     try:
-        api = config('DEEPSEEK_API')
-        client = OpenAI(api_key=api, base_url="https://api.deepseek.com")
+        # --- Ключи и клиенты ---
+        api_deepseek = config('DEEPSEEK_API', default='')
+        api_openai   = config('OPENAI_API',   default='')
+        if not api_deepseek:
+            raise RuntimeError("DEEPSEEK_API not configured")
 
-        # 1) Сбор новостей (горизонт 24ч)
-        news = collect_news(
-            horizon_hours=24,
-            max_items_per_feed=40,
-            max_summary_chars=260
-        )
-        sv.logger.info("Всего новостей: %d", len(news))
+        client_ds = OpenAI(api_key=api_deepseek, base_url="https://api.deepseek.com")
+        client_oa = OpenAI(api_key=api_openai) if api_openai else None
 
-        # 2) Текущее время (UTC) и режимы
+        # Кандидаты OpenAI без Verify Org (переопределимо через ENV OPENAI_CANDIDATES)
+        env_models = config('OPENAI_CANDIDATES', default='').strip()
+        openai_candidates = [m.strip() for m in env_models.split(',') if m.strip()] or ["gpt-4o", "gpt-4.1", "o3-mini"]
+
+        # --- Сбор новостей ---
+        news_items = collect_news(horizon_hours=24, max_items_per_feed=40, max_summary_chars=260)
+        sv.logger.info("Всего новостей: %d", len(news_items))
+
+        # --- Нормализация (оставляем только то, что важно для скоринга) ---
         dt = datetime.now(timezone.utc)
-        CHEAP_HOURS_UTC = {16, 17, 18, 19, 20, 21, 22, 23, 0}  # дешёвые часы по вашему правилу
-        cheap_mode = dt.hour in CHEAP_HOURS_UTC
 
-        # 3) Сообщения
-        system_msg = "You are a crypto market analyst. Output json only."
+        def _attr_or_key(obj, *names):
+            for n in names:
+                if hasattr(obj, n):
+                    return getattr(obj, n)
+                if isinstance(obj, dict) and n in obj:
+                    return obj[n]
+            return None
 
-        if cheap_mode:
-            # Подробный структурированный ответ
-            user_msg = (
-                f"Now (UTC): {dt.isoformat()}. Analyze the following crypto news items.\n"
-                "For the next 2–5 hours: assign each headline an integer weight 1–7 for impact.\n"
-                "Positive → add; negative → subtract. Sum all weights into one signed score.\n"
-                "Return valid JSON ONLY using this schema:\n"
-                "{\n"
-                '  "score": <number>,\n'
-                '  "details": [\n'
-                '    {"headline": "<string>", "weight": <1-7>, "sign": "positive|negative", "age_minutes": <int>}\n'
-                "  ]\n"
-                "}\n"
-                "No markdown, no extra text."
-            )
-            max_tokens = 5000
-        else:
-            # Минимальный ответ в дорогие часы
-            user_msg = (
-                f"Now (UTC): {dt.isoformat()}. Analyze the following crypto news items.\n"
-                "For the next 2–5 hours: assign each headline an integer weight 1–7 for impact.\n"
-                "Positive → add; negative → subtract. Sum all weights into a single signed score.\n"
-                "Return exactly this valid JSON object and nothing else:\n"
-                '{"score": <number>}'
-            )
-            max_tokens = 200
+        def _age_minutes(ts_val) -> int:
+            if not ts_val:
+                return 0
+            try:
+                ts = datetime.fromisoformat(str(ts_val).replace("Z", "+00:00"))
+                return max(0, int((dt - ts).total_seconds() // 60))
+            except Exception:
+                return 0
 
-        # 4) Новости подаём в JSON
-        news_json = json.dumps(news, ensure_ascii=False, default=str)
+        # Формируем компактный плоский список строк вида: "<title> | age=<N>min"
+        # Это почти как ваш прежний str(news), но без мусора: лаконично и стабильно.
+        compact_lines = []
+        for it in news_items:
+            title = _attr_or_key(it, "title", "headline", "text", "name")
+            published = _attr_or_key(it, "published_utc", "published_at", "published", "time_utc", "date")
+            if not title:
+                continue
+            t = re.sub(r"\s+", " ", str(title)).strip()
+            age_m = _age_minutes(published)
+            compact_lines.append(f"{t} | age={age_m}min")
 
-        def _extract_json(text: str) -> str:
-            """Достаёт JSON-объект из текста (fenced-блок или последний {...})."""
-            if not text:
-                return ""
-            m = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
-            if m:
-                return m.group(1).strip()
-            start, end = text.rfind("{"), text.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                candidate = text[start:end + 1].strip()
-                try:
-                    # нормализуем и возвращаем строку JSON
-                    return json.dumps(json.loads(candidate), ensure_ascii=False)
-                except Exception:
-                    pass
-            return ""
+        if not compact_lines:
+            raise ValueError("No usable news items after normalization.")
 
-        def _call_model(model_name: str):
-            return client.chat.completions.create(
+        # Ввод модели — обычный текстовый список, как в вашем исходнике (без JSON-моды)
+        news_text = "\n".join(f"- {line}" for line in compact_lines)
+
+        # --- Сообщения (в духе вашего исходника) ---
+        system_msg = "You are a financial analyst of crypto markets"
+
+        user_prompt = f'''Your task is to analyze the list of these news items. 
+        Each news item should be assigned a weight on a seven-point scale from 1 to 7 depending on how important it is for the next few hours 2-5 hours in terms of its impact on the cryptocurrency market. 
+        Also look at how long ago it was released. Today is now {dt}. After that, analyze each news item, is it positive for BTC growth or negative, and sum up all the points, plus if positive, minus if negative, and finally give me the final assessment in the format json "score": val '''
+
+        # --- Универсальные вызовы ---
+        def _call_reasoner(model_name: str):
+            # ВАЖНО: без max_tokens, без stop, без response_format — как в вашем рабочем коде.
+            return client_ds.chat.completions.create(
                 model=model_name,
                 messages=[
                     {"role": "system", "content": system_msg},
-                    {"role": "user",   "content": user_msg + "\n\nNEWS_JSON:\n" + news_json},
+                    {"role": "user",   "content": f"{user_prompt}\n\nNEWS:\n{news_text}"},
                 ],
-                response_format={"type": "json_object"},
-                temperature=0,
-                max_tokens=max_tokens,
                 stream=False,
             )
 
-        # 5) Основной вызов: deepseek-reasoner
-        response = _call_model("deepseek-reasoner")
-        choice = response.choices[0]
+        def _call_openai(model_name: str):
+            # Для OpenAI также без строгих режимов — пусть вернёт как удобно, мы распарсим.
+            return client_oa.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user",   "content": f"{user_prompt}\n\nNEWS:\n{news_text}"},
+                ],
+                stream=False,
+            )
 
-        raw = (getattr(choice.message, "content", None) or "").strip()
-        finish_reason = getattr(choice, "finish_reason", None)
-        sv.logger.info("finish_reason=%s", finish_reason)
-        sv.logger.info("ОТВЕТ АССИСТЕНТА (raw): %s", raw)
-        sv.logger.info("-" * 50)
+        def _call_deepseek_chat():
+            return client_ds.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user",   "content": f"{user_prompt}\n\nNEWS:\n{news_text}"},
+                ],
+                stream=False,
+            )
 
-        # 6) Если пусто — пробуем вытащить JSON из reasoning_content (не логируем его целиком)
-        if not raw:
-            rc = (getattr(choice.message, "reasoning_content", None) or "")
-            raw = _extract_json(rc)
+        # --- Парсинг ответа (как у вас + усиленный фолбэк) ---
+        def _parse_score(text: str):
+            if not text:
+                return None, None
+            # 1) fenced ```json ... ```
+            m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
+            if m:
+                block = m.group(1).strip()
+                try:
+                    d = json.loads(block)
+                    return d, block
+                except Exception:
+                    pass
+            # 2) первый объект {...}
+            m2 = re.search(r"\{.*?\}", text, re.DOTALL)
+            if m2:
+                raw = m2.group(0)
+                try:
+                    d = json.loads(raw)
+                    return d, raw
+                except Exception:
+                    # лёгкий санитайзер на хвостовые запятые
+                    raw2 = re.sub(r",\s*}", "}", raw)
+                    raw2 = re.sub(r",\s*]", "]", raw2)
+                    try:
+                        d = json.loads(raw2)
+                        return d, raw2
+                    except Exception:
+                        pass
+            # 3) просто число после "score"
+            m3 = re.search(r'"score"\s*:\s*(-?\d+(\.\d+)?)', text)
+            if m3:
+                val = float(m3.group(1))
+                return {"score": val}, f'{{"score": {val}}}'
+            return None, None
 
-        # 7) Если всё ещё пусто — fallback на deepseek-chat
-        if not raw:
-            sv.logger.warning("Empty content from deepseek-reasoner; falling back to deepseek-chat.")
-            response2 = _call_model("deepseek-chat")
-            choice2 = response2.choices[0]
-            raw = (getattr(choice2.message, "content", None) or "").strip()
-            if not raw:
-                rc2 = (getattr(choice2.message, "reasoning_content", None) or "")
-                raw = _extract_json(rc2)
+        used_model = None
+        final_data = None
+        final_raw = None
 
-        if not raw:
-            raise ValueError("Model returned empty content")
+        # 1) deepseek-reasoner
+        try:
+            resp = _call_reasoner("deepseek-reasoner")
+            choice = resp.choices[0] if resp.choices else None
+            raw = (getattr(choice.message, "content", None) or "").strip() if choice else ""
+            sv.logger.info("DeepSeek-reasoner finish_reason=%s", getattr(choice, "finish_reason", None) if choice else None)
+            parsed, raw_json = _parse_score(raw)
+            if parsed:
+                used_model = "deepseek:deepseek-reasoner"
+                final_data = parsed
+                final_raw = raw  # отправим полностью, без усечений
+        except Exception as e:
+            sv.logger.warning("DeepSeek-reasoner error: %s", e)
 
-        # 8) Снимаем возможные ограждения ```
-        if raw.startswith("```"):
-            s, e = raw.find("{"), raw.rfind("}")
-            if s != -1 and e != -1 and e > s:
-                raw = raw[s:e + 1].strip()
+        # 2) OpenAI fallback
+        if not final_data and client_oa:
+            for mdl in openai_candidates:
+                try:
+                    resp_oa = _call_openai(mdl)
+                    ch = resp_oa.choices[0] if resp_oa.choices else None
+                    raw_oa = (getattr(ch.message, "content", None) or "").strip() if ch else ""
+                    sv.logger.info("OpenAI %s finish_reason=%s", mdl, getattr(ch, "finish_reason", None) if ch else None)
+                    parsed, raw_json = _parse_score(raw_oa)
+                    if parsed:
+                        used_model = f"openai:{mdl}"
+                        final_data = parsed
+                        final_raw = raw_oa
+                        break
+                except Exception as e:
+                    msg = str(e).lower()
+                    if any(k in msg for k in ("model_not_found", "verify", "insufficient", "quota", "billing", "payment", "404")):
+                        sv.logger.warning("OpenAI %s access issue: %s", mdl, e)
+                    else:
+                        sv.logger.warning("OpenAI %s error: %s", mdl, e)
+        elif not final_data and not client_oa:
+            sv.logger.info("OPENAI_API not configured; skipping OpenAI fallback.")
 
-        data = json.loads(raw)  # JSON-mode должен гарантировать валидность
-        final_score = float(data.get("score", 0))
+        # 3) deepseek-chat fallback
+        if not final_data:
+            try:
+                resp_c = _call_deepseek_chat()
+                ch2 = resp_c.choices[0] if resp_c.choices else None
+                raw_c = (getattr(ch2.message, "content", None) or "").strip() if ch2 else ""
+                sv.logger.info("DeepSeek-chat finish_reason=%s", getattr(ch2, "finish_reason", None) if ch2 else None)
+                parsed, raw_json = _parse_score(raw_c)
+                if parsed:
+                    used_model = "deepseek:deepseek-chat"
+                    final_data = parsed
+                    final_raw = raw_c
+            except Exception as e:
+                sv.logger.warning("DeepSeek-chat error: %s", e)
+
+        if not final_data or final_raw is None:
+            raise ValueError("No valid JSON from all providers (reasoner → openai(candidates) → chat).")
+
+        # Итог
+        final_score = float(final_data.get("score", 0))
+        sv.logger.info("MODEL USED: %s", used_model)
         sv.logger.info("ФИНАЛЬНЫЙ SCORE: %s", final_score)
 
-        await safe_send('COLLECTOR_API', raw, '', False)
-        return data
+        # В COLLECTOR — сырой полный ответ модели
+        await safe_send('COLLECTOR_API', final_raw, '', False)
+        return final_data
 
     except Exception as e:
         sv.logger.exception("%s", e)
         await safe_send('TELEGRAM_API', f'News Analyzer error: {e}', '', False)
+
 
 
 
@@ -164,9 +250,7 @@ async def news_metric():
 #         prompt = f'''Your task is to analyze the list of these news items. 
 #         Each news item should be assigned a weight on a seven-point scale from 1 to 7 depending on how important it is for the next few hours 2-5 hours in terms of its impact on the cryptocurrency market. 
 #         Also look at how long ago it was released. Today is now {dt}. After that, analyze each news item, is it positive for BTC growth or negative, and sum up all the points, plus if positive, minus if negative, and finally give me the final assessment in the format json "score": val '''
-#         only_json = '\nReturn only valid JSON. Do not explain anything. Do not include any additional text or markdown.'
-#         if dt.hour not in [16, 17, 18, 19, 20, 21, 22, 23]:
-#             prompt += only_json
+
 #         response = client.chat.completions.create(
 #             model="deepseek-reasoner",
 #             messages=[

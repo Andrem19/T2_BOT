@@ -16,7 +16,7 @@ from metrics.serv import map_time_to_score
 import helpers.tools as tools
 import helpers.tlg as tel
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from concurrent.futures import Future, TimeoutError as FutTimeoutError
@@ -288,7 +288,8 @@ class HourlyAt57Scheduler:
         try:
             _logger.info("Запуск hourly job run_id=%s на %s", run_id, started_local)
 
-            news_score = await news_metric()
+            dt = datetime.now(timezone.utc)
+            news_score = await news_metric() if dt.hour not in [2, 3, 4, 5, 6, 7] and dt.weekday() not in [5] else {'score': 0}
             # 1) task_one (await)
             t1_res: Dict[str, Any] = await task_one()
 
