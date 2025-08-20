@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-intel.py — практичный сборщик рыночных сигналов без приватных ключей.
+intel.py — безопасный сборщик рыночных сигналов без приватных ключей.
 
-Исправлено:
-- Потоки спот/перп теперь берутся через /aggTrades (startTime/endTime) без API-ключей.
-- Учитываем флаг 'm' (isBuyerMaker) из aggTrades, а не 'isBuyerMaker' из /trades.
+Антиблокировочные меры:
+- Централизованный rate-limiter per-host: минимальный интервал + «вес в минуту».
+- Бережная обработка 429/Retry-After с экспоненциальным бэкоффом и джиттером.
+- Адаптивная нарезка окна для aggTrades с жёстным лимитом на количество вызовов (по умолчанию ≤ 20 на сторону).
+- Лёгкий троттлинг между вызовами aggTrades.
+- Строго последовательные запросы (без конкуренции), чтобы не «стрелять очередями» по IP.
 
-Крипто (Binance) + «внешняя погода»:
-- ES (E-mini S&P 500), NQ (E-mini Nasdaq 100), DXY (ICE Dollar Index) через Stooq CSV-снимки.
-
-Покрытие (публичные фиды):
+Покрытие:
   • Binance USDⓈ-M: цена/свечи, OI, funding, premium index (basis), aggTrades (спот/перп), книга заявок, futures data ratios.
   • Bybit/OKX/Deribit: кросс-биржевой снапшот перпов (mark/index/funding/basis).
-  • Stooq (без ключей): ES.F, NQ.F, DX.F / USD_I — «сейчас» (OHLCV) и интрадей-изменение.
+  • Stooq (без ключей): ES.F, NQ.F, DX.F / USD_I (CSV-снимки).
 
 Зависимости: requests
 """
@@ -22,27 +22,118 @@ from __future__ import annotations
 import time
 import math
 import json
-from datetime import datetime, timedelta, timezone
+import random
+from collections import deque
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
 
 # -------------------------
-# Константы базовых URL
+# Конфигурация «мягких» лимитов по хостам
+# -------------------------
+
+# Минимальная пауза между запросами к одному хосту (сек)
+MIN_GAP_PER_HOST = {
+    "api.binance.com": 0.25,
+    "fapi.binance.com": 0.25,
+    "api.bybit.com": 0.25,
+    "www.okx.com": 0.25,
+    "www.deribit.com": 0.25,
+    "stooq.com": 0.50,
+}
+
+# Максимум «условных весов» на 60 секунд (скользящее окно).
+# Мы ЗАВЕДОМО занижаем допустимую нагрузку, чтобы оставался запас.
+MAX_WEIGHT_PER_MIN = {
+    "api.binance.com": 300,
+    "fapi.binance.com": 300,
+    "api.bybit.com": 120,
+    "www.okx.com": 120,
+    "www.deribit.com": 120,
+    "stooq.com": 60,
+}
+
+# Эвристические веса эндпоинтов (чем «тяжелее», тем больше вес)
+def endpoint_weight(host: str, path: str) -> int:
+    p = path.lower()
+    if "aggtrades" in p:           # лента аггрегированных сделок
+        return 10
+    if "ticker/24hr" in p:         # большие массивы
+        return 4
+    if "klines" in p:              # свечи/индексные свечи
+        return 2
+    if "depth" in p:               # книга заявок
+        return 3
+    if "openinterest" in p:        # OI
+        return 2
+    if "futures/data" in p:        # ratios, global/top
+        return 2
+    if "premiumindex" in p:        # mark/index
+        return 1
+    # прочие — лёгкие
+    return 1
+
+
+# -------------------------
+# Базовые URL
 # -------------------------
 
 BINANCE_SPOT = "https://api.binance.com"
-BINANCE_FAPI = "https://fapi.binance.com"   # USDⓈ-M Futures
-BYBIT = "https://api.bybit.com"             # v5 public
+BINANCE_FAPI = "https://fapi.binance.com"
+BYBIT = "https://api.bybit.com"
 OKX = "https://www.okx.com"
 DERIBIT = "https://www.deribit.com"
-STOOQ = "https://stooq.com"                 # CSV quote snapshots (q/l)
+STOOQ = "https://stooq.com"
 
-# Таймауты/ретраи
-REQ_TIMEOUT = 10
-MAX_RETRIES = 2
-SLEEP_BETWEEN_RETRIES = 0.25
+
+# -------------------------
+# RateLimiter
+# -------------------------
+
+class RateLimiter:
+    """
+    Перехватывает все запросы к одному хосту и:
+      1) гарантирует минимальный интервал между запросами;
+      2) не допускает превышения заданного веса на минуту (скользящее окно).
+    """
+    def __init__(self, host: str):
+        self.host = host
+        self.min_gap = float(MIN_GAP_PER_HOST.get(host, 0.25))
+        self.max_per_min = int(MAX_WEIGHT_PER_MIN.get(host, 120))
+        self._last_ts = 0.0
+        self._win = deque()  # (ts, weight) за последние 60с
+        self._win_weight = 0
+
+    def _prune(self, now: float):
+        while self._win and now - self._win[0][0] >= 60.0:
+            _, w = self._win.popleft()
+            self._win_weight -= w
+
+    def acquire(self, weight: int):
+        weight = max(1, int(weight))
+        while True:
+            now = time.time()
+            # Пауза до min_gap
+            gap = now - self._last_ts
+            if gap < self.min_gap:
+                time.sleep(self.min_gap - gap)
+                continue
+            # Вес за минуту
+            self._prune(now)
+            if self._win_weight + weight > self.max_per_min:
+                # подождём до освобождения «окна»
+                # ориентируемся на уход самого старого элемента
+                oldest_ts = self._win[0][0] if self._win else now
+                wait = max(0.05, 60.0 - (now - oldest_ts))
+                time.sleep(min(wait, 5.0))  # короткими шажками
+                continue
+            # Всё ок — резервируем
+            self._win.append((now, weight))
+            self._win_weight += weight
+            self._last_ts = now
+            return
 
 
 # -------------------------
@@ -61,32 +152,81 @@ def _safe_float(x: Any, default: float = float("nan")) -> float:
 
 
 def _pct(a: float, b: float) -> float:
-    """(b - a)/a в долях; безопасно к NaN и нулю."""
     if not math.isfinite(a) or a == 0 or not math.isfinite(b):
         return float("nan")
     return (b - a) / a
 
 
+# -------------------------
+# HTTP-клиент
+# -------------------------
+
 class Http:
-    """Простой HTTP-клиент с ретраями."""
+    """HTTP-клиент с rate-limiter и аккуратным бэкоффом на 429/5xx."""
     def __init__(self, base_url: str):
         self.base = base_url.rstrip("/")
         self.s = requests.Session()
+        self.host = self.base.split("://", 1)[-1]
+        self.limiter = RateLimiter(self.host)
+
+        self.timeout = 10
+        self.max_retries = 6
+        self.base_backoff = 0.6
+        self.max_backoff = 8.0
+        self.small_jitter = 0.2
+
+        self.default_headers = {
+            "User-Agent": "intel-safe-client/1.0",
+            "Accept": "application/json,text/csv;q=0.9,*/*;q=0.8",
+        }
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None) -> Any:
         url = f"{self.base}{path}"
+        w = endpoint_weight(self.host, path)
+
         last_err = None
-        for _ in range(MAX_RETRIES + 1):
+        backoff = self.base_backoff
+
+        for attempt in range(self.max_retries + 1):
+            # централизованный rate-limit
+            self.limiter.acquire(w)
+
             try:
-                r = self.s.get(url, params=params, headers=headers or {}, timeout=REQ_TIMEOUT)
+                r = self.s.get(url, params=params, headers={**self.default_headers, **(headers or {})}, timeout=self.timeout)
+
+                # Честная обработка лимитов
+                if r.status_code == 429:
+                    ra = r.headers.get("Retry-After")
+                    if ra:
+                        try:
+                            wait = float(ra)
+                        except Exception:
+                            wait = backoff
+                    else:
+                        wait = backoff
+                    wait = min(wait + random.uniform(0, self.small_jitter), self.max_backoff)
+                    time.sleep(wait)
+                    backoff = min(backoff * 2.0, self.max_backoff)
+                    continue
+
+                # Если вдруг 418 (жёсткая защита), не лупим дальше
+                if r.status_code == 418:
+                    raise RuntimeError(f"HTTP 418 from {url} — hard rate limit triggered.")
+
                 r.raise_for_status()
+
                 ctype = (r.headers.get("Content-Type") or "").lower()
                 if "application/json" in ctype:
                     return r.json()
                 return r.text
-            except Exception as e:
+
+            except requests.RequestException as e:
                 last_err = e
-                time.sleep(SLEEP_BETWEEN_RETRIES)
+                # экспоненциальный бэкофф с джиттером
+                wait = min(backoff + random.uniform(0, self.small_jitter), self.max_backoff)
+                time.sleep(wait)
+                backoff = min(backoff * 2.0, self.max_backoff)
+
         raise RuntimeError(f"GET failed {url} params={params}: {last_err}")
 
 
@@ -95,8 +235,6 @@ class Http:
 # -------------------------
 
 class BinancePublic:
-    """Публичные REST-эндпоинты Binance (spot + USDⓈ-M fapi)."""
-
     def __init__(self):
         self.spot = Http(BINANCE_SPOT)
         self.fapi = Http(BINANCE_FAPI)
@@ -104,18 +242,14 @@ class BinancePublic:
     # ---- Свечи/цена/базис ----
 
     def fapi_klines(self, symbol: str, interval: str, start_time: int, end_time: int, limit: int = 500) -> List[list]:
-        params = {"symbol": symbol, "interval": interval, "startTime": start_time, "endTime": end_time, "limit": limit}
-        return self.fapi.get("/fapi/v1/klines", params)
+        return self.fapi.get("/fapi/v1/klines", {"symbol": symbol, "interval": interval, "startTime": start_time, "endTime": end_time, "limit": limit})
 
     def fapi_premium_index(self, symbol: Optional[str] = None) -> Dict[str, Any]:
-        params = {}
-        if symbol:
-            params["symbol"] = symbol
+        params = {"symbol": symbol} if symbol else {}
         return self.fapi.get("/fapi/v1/premiumIndex", params)
 
     def fapi_premium_index_klines(self, symbol: str, interval: str, start_time: int, end_time: int, limit: int = 500) -> List[list]:
-        params = {"symbol": symbol, "interval": interval, "startTime": start_time, "endTime": end_time, "limit": limit}
-        return self.fapi.get("/fapi/v1/premiumIndexKlines", params)
+        return self.fapi.get("/fapi/v1/premiumIndexKlines", {"symbol": symbol, "interval": interval, "startTime": start_time, "endTime": end_time, "limit": limit})
 
     def fapi_continuous_klines(self, pair: str, contract_type: str, interval: str, start_time: int, end_time: int, limit: int = 500) -> List[list]:
         params = {"pair": pair, "contractType": contract_type, "interval": interval, "startTime": start_time, "endTime": end_time, "limit": limit}
@@ -158,24 +292,13 @@ class BinancePublic:
     # ---- Лента/книга/тикеры ----
 
     def spot_agg_trades(self, symbol: str, start_time: int, end_time: int, limit: int = 1000) -> List[Dict[str, Any]]:
-        """
-        GET /api/v3/aggTrades — публично, без ключа.
-        Параметры: symbol, startTime, endTime, limit<=1000
-        """
-        params = {"symbol": symbol, "startTime": start_time, "endTime": end_time, "limit": min(limit, 1000)}
-        return self.spot.get("/api/v3/aggTrades", params)
+        return self.spot.get("/api/v3/aggTrades", {"symbol": symbol, "startTime": start_time, "endTime": end_time, "limit": min(limit, 1000)})
 
     def fapi_agg_trades(self, symbol: str, start_time: int, end_time: int, limit: int = 1000) -> List[Dict[str, Any]]:
-        """
-        GET /fapi/v1/aggTrades — публично, без ключа.
-        Параметры: symbol, startTime, endTime, limit<=1000
-        """
-        params = {"symbol": symbol, "startTime": start_time, "endTime": end_time, "limit": min(limit, 1000)}
-        return self.fapi.get("/fapi/v1/aggTrades", params)
+        return self.fapi.get("/fapi/v1/aggTrades", {"symbol": symbol, "startTime": start_time, "endTime": end_time, "limit": min(limit, 1000)})
 
     def spot_depth(self, symbol: str, limit: int = 5000) -> Dict[str, Any]:
-        params = {"symbol": symbol, "limit": min(limit, 5000)}
-        return self.spot.get("/api/v3/depth", params)
+        return self.spot.get("/api/v3/depth", {"symbol": symbol, "limit": min(limit, 5000)})
 
     def spot_ticker_24hr_all(self) -> List[Dict[str, Any]]:
         return self.spot.get("/api/v3/ticker/24hr", None)
@@ -220,13 +343,8 @@ class DeribitPublic:
 
 
 class StooqPublic:
-    """
-    Stooq CSV-«снимок» котировок: /q/l/?s=SYMBOL&f=sd2t2ohlcv&h&e=csv
-    Поля: symbol, date(yyyy-mm-dd), time(hh:mm:ss), open, high, low, close, volume.
-    """
     def __init__(self):
         self.http = Http(STOOQ)
-
     def quote_snapshot(self, symbol: str) -> Dict[str, Any]:
         path = "/q/l/"
         params = {"s": symbol.lower(), "f": "sd2t2ohlcv", "h": "", "e": "csv"}
@@ -242,6 +360,7 @@ class StooqPublic:
         def col(name: str) -> Optional[str]:
             i = idx.get(name)
             return row[i] if i is not None and i < len(row) else None
+        from math import isfinite
         o = _safe_float(col("open")); h = _safe_float(col("high"))
         l = _safe_float(col("low"));  c = _safe_float(col("close"))
         v = _safe_float(col("volume"))
@@ -253,7 +372,7 @@ class StooqPublic:
             "time": time_s,
             "open": o, "high": h, "low": l, "close": c, "volume": v,
             "intraday_change_pct": _pct(o, c),
-            "valid": (math.isfinite(o) and math.isfinite(c)),
+            "valid": (isfinite(o) and isfinite(c)),
         }
 
 
@@ -262,11 +381,6 @@ class StooqPublic:
 # -------------------------
 
 def _sum_quote_from_aggtrades(trades: List[Dict[str, Any]]) -> Tuple[float, float]:
-    """
-    Суммирует объём в котируемой валюте по aggTrades (spot/futures).
-    'm' == True  -> buyer is maker  -> сделка продавца-такера (taker SELL)
-    'm' == False -> buyer is taker  -> сделка покупателя-такера (taker BUY)
-    """
     buy_q, sell_q = 0.0, 0.0
     for t in trades:
         price = _safe_float(t.get("p") or t.get("price"))
@@ -274,7 +388,7 @@ def _sum_quote_from_aggtrades(trades: List[Dict[str, Any]]) -> Tuple[float, floa
         if not (math.isfinite(price) and math.isfinite(qty)):
             continue
         quote = price * qty
-        is_buyer_maker = bool(t.get("m"))  # ключ из aggTrades
+        is_buyer_maker = bool(t.get("m"))
         if is_buyer_maker:
             sell_q += quote   # taker SELL
         else:
@@ -283,7 +397,6 @@ def _sum_quote_from_aggtrades(trades: List[Dict[str, Any]]) -> Tuple[float, floa
 
 
 def _orderbook_tilt(depth: Dict[str, Any], mid: float, pct_radius: float) -> Dict[str, float]:
-    """Суммирует заявки в кольце +- pct_radius от mid."""
     hi = mid * (1 + pct_radius)
     lo = mid * (1 - pct_radius)
     bids = depth.get("bids") or []
@@ -317,14 +430,18 @@ def _interval_to_ms(period: str) -> int:
 # -------------------------
 
 class MarketIntel:
-    """Фасад для разового снимка сигналов."""
-
     def __init__(self):
         self.binance = BinancePublic()
         self.bybit = BybitPublic()
         self.okx = OkxPublic()
         self.deribit = DeribitPublic()
         self.stooq = StooqPublic()
+
+        # Жёстный бюджет на вызовы aggTrades в одном снапшоте (per side)
+        self.max_agg_calls_per_side = 20
+
+        # Лёгкий троттлинг между вызовами aggTrades (дополнительно к rate-limiter)
+        self.agg_throttle_range = (0.05, 0.15)
 
     # ---- БАЗОВЫЕ БЛОКИ Binance ----
 
@@ -385,44 +502,80 @@ class MarketIntel:
         }
         return funding, basis
 
-    def _collect_agg_trades_timeboxed(self, fetch_fn, symbol: str, lookback_hours: float, step_minutes: int = 15) -> List[Dict[str, Any]]:
+    # --- Безопасный сбор aggTrades с бюджетом на вызовы ---
+    def _collect_agg_trades_safe(self, fetch_fn, symbol: str, lookback_hours: float) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
-        Собираем aggTrades публично, без ключей, нарезая окно на интервалы времени.
-        Если в интервале возвращается ровно 1000 записей (лимит), динамически уменьшаем шаг.
+        Возвращает (trades, meta), где meta содержит информацию о бюджете/частичности.
+        Гарантирует, что число вызовов не превысит self.max_agg_calls_per_side.
         """
         end_ms = _now_ms()
         start_ms = end_ms - int(lookback_hours * 3600_000)
+        window_ms = end_ms - start_ms
+
+        # Стартовый шаг: ~6 частей, но не меньше 5 минут.
+        step_ms = max(5 * 60_000, int(window_ms / 6))
+        # Уважим бюджет: не больше max_agg_calls_per_side окон.
+        max_calls = max(1, int(self.max_agg_calls_per_side))
+        est_calls = max(1, int(math.ceil(window_ms / step_ms)))
+        if est_calls > max_calls:
+            step_ms = int(math.ceil(window_ms / max_calls))
 
         results: List[Dict[str, Any]] = []
-        step_ms = step_minutes * 60_000
+        calls_made = 0
+        partial = False
 
         cur_start = start_ms
-        while cur_start < end_ms:
+        MIN_STEP = 60_000
+        MAX_STEP = 60 * 60_000
+
+        while cur_start < end_ms and calls_made < max_calls:
             cur_end = min(end_ms, cur_start + step_ms)
             page = fetch_fn(symbol, start_time=cur_start, end_time=cur_end, limit=1000) or []
             results.extend(page)
+            calls_made += 1
 
-            # Если выбили ровно 1000 — вероятно, отсечка по лимиту; уменьшим шаг в 3 раза и повторим участок
-            if len(page) >= 1000 and step_ms > 60_000:
-                step_ms = max(step_ms // 3, 60_000)  # минимум 1 минута
-                continue
+            # Лёгкий троттлинг поверх rate-limiter
+            time.sleep(random.uniform(*self.agg_throttle_range))
 
-            # Иначе двигаем окно
+            n = len(page)
+            # Если участок очень плотный — сжимаем шаг (но помним про бюджет)
+            if n >= 950 and step_ms > MIN_STEP:
+                step_ms = max(MIN_STEP, step_ms // 2)
+
+            # Если участок рыхлый — можно немного расширить
+            elif n <= 200 and step_ms < MAX_STEP:
+                step_ms = min(MAX_STEP, int(step_ms * 1.25))
+
+            # Двигаем окно
             cur_start = cur_end
 
-        return [t for t in results if int(t.get("T") or t.get("time") or 0) >= start_ms]
+        # Если мы не прошли всё окно (упёрлись в бюджет) — считаем это частичным покрытием.
+        if cur_start < end_ms:
+            partial = True
+
+        # Жёстко отфильтруем по старту окна
+        results = [t for t in results if int(t.get("T") or t.get("time") or 0) >= start_ms]
+
+        meta = {
+            "_calls_made": calls_made,
+            "_max_calls": max_calls,
+            "_partial": partial,
+            "_covered_ms": (cur_start - start_ms),
+            "_window_ms": window_ms,
+        }
+        return results, meta
 
     def flows_block(self, spot_symbol: str, perp_symbol: str, lookback_hours: float) -> Dict[str, Any]:
-        # СПОТ и ПЕРП: только aggTrades (startTime/endTime), без fromId и без ключей
-        spot_tr = self._collect_agg_trades_timeboxed(self.binance.spot_agg_trades, spot_symbol, lookback_hours, step_minutes=15)
-        perp_tr = self._collect_agg_trades_timeboxed(self.binance.fapi_agg_trades, perp_symbol, lookback_hours, step_minutes=15)
+        spot_tr, spot_meta = self._collect_agg_trades_safe(self.binance.spot_agg_trades, spot_symbol, lookback_hours)
+        perp_tr, perp_meta = self._collect_agg_trades_safe(self.binance.fapi_agg_trades,  perp_symbol,  lookback_hours)
 
         sb, ss = _sum_quote_from_aggtrades(spot_tr)
         pb, ps = _sum_quote_from_aggtrades(perp_tr)
 
         spot_net = sb - ss
         perp_net = pb - ps
-        return {
+
+        out = {
             "spot": {
                 "taker_buy_quote": sb, "taker_sell_quote": ss, "taker_net_quote": spot_net,
                 "sense": "net_taker_buy" if spot_net > 0 else "net_taker_sell" if spot_net < 0 else "balanced",
@@ -434,68 +587,78 @@ class MarketIntel:
             "spot_vs_perp": {
                 "spot_net_minus_perp_net": spot_net - perp_net,
                 "spot_stronger_than_perp": (spot_net > perp_net),
-            }
+            },
+            "_meta": {"spot": spot_meta, "perp": perp_meta}
         }
+        return out
 
     def orderbook_block(self, spot_symbol: str, use_price: Optional[float] = None) -> Dict[str, Any]:
         depth = self.binance.spot_depth(spot_symbol, limit=5000)
-        best_bid = _safe_float(depth["bids"][0][0]) if depth.get("bids") else float("nan")
-        best_ask = _safe_float(depth["asks"][0][0]) if depth.get("asks") else float("nan")
+        best_bid = _safe_float(depth.get("bids", [[math.nan]])[0][0])
+        best_ask = _safe_float(depth.get("asks", [[math.nan]])[0][0])
         mid = use_price if (use_price and math.isfinite(use_price)) else (best_bid + best_ask) / 2.0
         bands = {}
-        for pct_band in (0.005, 0.01):  # 0.5% и 1%
+        for pct_band in (0.005, 0.01):
             k = f"{pct_band*100:.2f}%"
             bands[k] = _orderbook_tilt(depth, mid, pct_band)
         return {"mid": mid, "bands": bands}
 
-    # ---- НОВЫЕ БЛОКИ (кросс-биржи/календарный базис/рацио/ширина/стейблы) ----
+    # ---- Доп. блоки (кросс-биржи/календарный базис/рацио/ширина/стейблы/макро) ----
 
     def cross_exchange_perp_snapshot(self, symbol_binance: str = "BTCUSDT",
                                      bybit_symbol: str = "BTCUSDT",
                                      okx_inst: str = "BTC-USDT-SWAP",
                                      deribit_instr: str = "BTC-PERPETUAL") -> Dict[str, Any]:
         out: Dict[str, Any] = {}
+        try:
+            b = self.binance.fapi_premium_index(symbol_binance)
+            if b:
+                mark = _safe_float(b.get("markPrice")); index = _safe_float(b.get("indexPrice"))
+                basis = (mark - index) / index if (math.isfinite(mark) and math.isfinite(index) and index) else float("nan")
+                fr = _safe_float(b.get("lastFundingRate"))
+                out["binance"] = {"mark": mark, "index": index, "basis": basis,
+                                  "fundingRate": fr,
+                                  "whoPays": "longs_pay_shorts" if (math.isfinite(fr) and fr > 0) else "shorts_pay_longs" if (math.isfinite(fr) and fr < 0) else "neutral",
+                                  "ts": int(b.get("time") or 0)}
+        except Exception as e:
+            out["binance"] = {"_partial": True, "_reason": str(e)}
 
-        # Binance
-        b = self.binance.fapi_premium_index(symbol_binance)
-        if b:
-            mark = _safe_float(b.get("markPrice")); index = _safe_float(b.get("indexPrice"))
-            basis = (mark - index) / index if (math.isfinite(mark) and math.isfinite(index) and index) else float("nan")
-            fr = _safe_float(b.get("lastFundingRate"))
-            out["binance"] = {"mark": mark, "index": index, "basis": basis,
+        try:
+            y = self.bybit.linear_ticker(bybit_symbol)
+            if y:
+                mark = _safe_float(y.get("markPrice")); index = _safe_float(y.get("indexPrice"))
+                basis = (mark - index) / index if (math.isfinite(mark) and math.isfinite(index) and index) else float("nan")
+                fr = _safe_float(y.get("fundingRate"))
+                out["bybit"] = {"mark": mark, "index": index, "basis": basis,
+                                "fundingRate": fr,
+                                "whoPays": "longs_pay_shorts" if (math.isfinite(fr) and fr > 0) else "shorts_pay_longs" if (math.isfinite(fr) and fr < 0) else "neutral",
+                                "ts": int(y.get("ts") or 0)}
+        except Exception as e:
+            out["bybit"] = {"_partial": True, "_reason": str(e)}
+
+        try:
+            o_ticker = self.okx.swap_ticker(okx_inst)
+            o_funding = self.okx.funding_rate(okx_inst)
+            if o_ticker:
+                mark = _safe_float(o_ticker.get("markPx")); index = _safe_float(o_ticker.get("idxPx"))
+                basis = (mark - index) / index if (math.isfinite(mark) and math.isfinite(index) and index) else float("nan")
+                fr = _safe_float((o_funding or {}).get("fundingRate"))
+                out["okx"] = {"mark": mark, "index": index, "basis": basis,
                               "fundingRate": fr,
                               "whoPays": "longs_pay_shorts" if (math.isfinite(fr) and fr > 0) else "shorts_pay_longs" if (math.isfinite(fr) and fr < 0) else "neutral",
-                              "ts": int(b.get("time") or 0)}
+                              "ts": int(o_ticker.get("ts") or 0)}
+        except Exception as e:
+            out["okx"] = {"_partial": True, "_reason": str(e)}
 
-        # Bybit
-        y = self.bybit.linear_ticker(bybit_symbol)
-        if y:
-            mark = _safe_float(y.get("markPrice")); index = _safe_float(y.get("indexPrice"))
-            basis = (mark - index) / index if (math.isfinite(mark) and math.isfinite(index) and index) else float("nan")
-            fr = _safe_float(y.get("fundingRate"))
-            out["bybit"] = {"mark": mark, "index": index, "basis": basis,
-                            "fundingRate": fr,
-                            "whoPays": "longs_pay_shorts" if (math.isfinite(fr) and fr > 0) else "shorts_pay_longs" if (math.isfinite(fr) and fr < 0) else "neutral",
-                            "ts": int(y.get("ts") or 0)}
+        try:
+            d = self.deribit.book_summary_perpetual(deribit_instr)
+            if d:
+                mark = _safe_float(d.get("mark_price")); index = _safe_float(d.get("index_price"))
+                basis = (mark - index) / index if (math.isfinite(mark) and math.isfinite(index) and index) else float("nan")
+                out["deribit"] = {"mark": mark, "index": index, "basis": basis, "fundingRate": None, "whoPays": None, "ts": int(d.get("timestamp") or 0)}
+        except Exception as e:
+            out["deribit"] = {"_partial": True, "_reason": str(e)}
 
-        # OKX
-        o_ticker = self.okx.swap_ticker(okx_inst)
-        o_funding = self.okx.funding_rate(okx_inst)
-        if o_ticker:
-            mark = _safe_float(o_ticker.get("markPx")); index = _safe_float(o_ticker.get("idxPx"))
-            basis = (mark - index) / index if (math.isfinite(mark) and math.isfinite(index) and index) else float("nan")
-            fr = _safe_float((o_funding or {}).get("fundingRate"))
-            out["okx"] = {"mark": mark, "index": index, "basis": basis,
-                          "fundingRate": fr,
-                          "whoPays": "longs_pay_shorts" if (math.isfinite(fr) and fr > 0) else "shorts_pay_longs" if (math.isfinite(fr) and fr < 0) else "neutral",
-                          "ts": int(o_ticker.get("ts") or 0)}
-
-        # Deribit
-        d = self.deribit.book_summary_perpetual(deribit_instr)
-        if d:
-            mark = _safe_float(d.get("mark_price")); index = _safe_float(d.get("index_price"))
-            basis = (mark - index) / index if (math.isfinite(mark) and math.isfinite(index) and index) else float("nan")
-            out["deribit"] = {"mark": mark, "index": index, "basis": basis, "fundingRate": None, "whoPays": None, "ts": int(d.get("timestamp") or 0)}
         return out
 
     def calendar_basis_block(self, pair: str = "BTCUSDT", interval: str = "5m", lookback_hours: float = 2.0) -> Dict[str, Any]:
@@ -503,8 +666,11 @@ class MarketIntel:
         start = end - int(lookback_hours * 3600_000)
 
         def last_basis(contract_type: str) -> Dict[str, Any]:
-            fut = self.binance.fapi_continuous_klines(pair, contract_type, interval, start, end, limit=200)
-            idx = self.binance.fapi_index_price_klines(pair, interval, start, end, limit=200)
+            try:
+                fut = self.binance.fapi_continuous_klines(pair, contract_type, interval, start, end, limit=200)
+                idx = self.binance.fapi_index_price_klines(pair, interval, start, end, limit=200)
+            except Exception as e:
+                return {"_partial": True, "_reason": str(e), "bars": 0}
             if not fut or not idx:
                 return {"basis_now": float("nan"), "basis_then_open": float("nan"), "bars": 0}
             f_close = _safe_float(fut[-1][4]); i_close = _safe_float(idx[-1][4])
@@ -517,20 +683,30 @@ class MarketIntel:
     def sentiment_ratios_block(self, symbol: str, period: str = "5m", lookback_points: int = 24) -> Dict[str, Any]:
         end = _now_ms()
         start = end - (lookback_points * _interval_to_ms(period))
-        taker = self.binance.futures_data_taker_long_short_ratio(symbol, period, limit=lookback_points, start_time=start, end_time=end)
-        glob  = self.binance.futures_data_global_long_short_account_ratio(symbol, period, limit=lookback_points, start_time=start, end_time=end)
-        top_a = self.binance.futures_data_top_long_short_account_ratio(symbol, period, limit=lookback_points, start_time=start, end_time=end)
-        top_p = self.binance.futures_data_top_long_short_position_ratio(symbol, period, limit=lookback_points, start_time=start, end_time=end)
+        def safeget(fn, **kw):
+            try:
+                return fn(**kw)
+            except Exception as e:
+                return {"_partial": True, "_reason": str(e)}
+        taker = safeget(self.binance.futures_data_taker_long_short_ratio, symbol=symbol, period=period, limit=lookback_points, start_time=start, end_time=end)
+        glob  = safeget(self.binance.futures_data_global_long_short_account_ratio, symbol=symbol, period=period, limit=lookback_points, start_time=start, end_time=end)
+        top_a = safeget(self.binance.futures_data_top_long_short_account_ratio, symbol=symbol, period=period, limit=lookback_points, start_time=start, end_time=end)
+        top_p = safeget(self.binance.futures_data_top_long_short_position_ratio, symbol=symbol, period=period, limit=lookback_points, start_time=start, end_time=end)
 
-        def last_ratio(arr: List[Dict[str, Any]], field: str) -> Optional[float]:
-            if not arr: return None
-            return _safe_float(arr[-1].get(field) or arr[-1].get("buySellRatio"))
+        def last_ratio(arr: Any, field: str) -> Optional[float]:
+            if not isinstance(arr, list) or not arr:
+                return None
+            v = arr[-1].get(field) or arr[-1].get("buySellRatio")
+            return _safe_float(v)
         return {
             "taker_buy_sell_ratio": last_ratio(taker, "buySellRatio"),
             "global_long_short_ratio": last_ratio(glob, "longShortRatio"),
             "top_trader_accounts_ratio": last_ratio(top_a, "longShortRatio"),
             "top_trader_positions_ratio": last_ratio(top_p, "longShortRatio"),
-            "points": {"taker": len(taker), "global": len(glob), "top_accounts": len(top_a), "top_positions": len(top_p)}
+            "points": {"taker": len(taker) if isinstance(taker, list) else 0,
+                       "global": len(glob) if isinstance(glob, list) else 0,
+                       "top_accounts": len(top_a) if isinstance(top_a, list) else 0,
+                       "top_positions": len(top_p) if isinstance(top_p, list) else 0}
         }
 
     def market_breadth_spot_usdt(self, top_n_by_quote_vol: int = 50) -> Dict[str, Any]:
@@ -549,20 +725,11 @@ class MarketIntel:
             try:
                 px = self.binance.spot_ticker_price(s); p = _safe_float(px.get("price"))
                 out[s] = {"last": p, "deviation_from_1": (p - 1.0) if math.isfinite(p) else float("nan")}
-            except Exception:
-                out[s] = {"last": float("nan"), "deviation_from_1": float("nan")}
+            except Exception as e:
+                out[s] = {"_partial": True, "_reason": str(e), "last": float("nan"), "deviation_from_1": float("nan")}
         return out
 
-    # ---- ВНЕШНЯЯ ПОГОДА (ES/NQ/DXY через Stooq) ----
-
     def macro_weather_block(self) -> Dict[str, Any]:
-        """
-        Снимок ES, NQ, DXY:
-          • ES.F — E-mini S&P 500 (CME)
-          • NQ.F — E-mini Nasdaq-100 (CME)
-          • DX.F — ICE US Dollar Index futures (фолбэк: USD_I)
-        Данные: Stooq CSV snapshot (symbol,date,time,open,high,low,close,volume).
-        """
         def get_one(sym: str) -> Dict[str, Any]:
             try:
                 q = self.stooq.quote_snapshot(sym)
@@ -570,19 +737,17 @@ class MarketIntel:
                     return {"symbol": sym.upper(), "ok": False}
                 intr = q.get("intraday_change_pct")
                 sense = "up" if (isinstance(intr, float) and intr > 0) else "down" if (isinstance(intr, float) and intr < 0) else "flat"
-                return {
-                    "symbol": q["symbol"], "date": q["date"], "time": q["time"],
-                    "open": q["open"], "high": q["high"], "low": q["low"], "close": q["close"], "volume": q["volume"],
-                    "intraday_change_pct": intr, "sense": sense, "ok": True
-                }
-            except Exception:
-                return {"symbol": sym.upper(), "ok": False}
+                return {"symbol": q["symbol"], "date": q["date"], "time": q["time"],
+                        "open": q["open"], "high": q["high"], "low": q["low"], "close": q["close"], "volume": q["volume"],
+                        "intraday_change_pct": intr, "sense": sense, "ok": True}
+            except Exception as e:
+                return {"symbol": sym.upper(), "ok": False, "_partial": True, "_reason": str(e)}
 
         es = get_one("ES.F")
         nq = get_one("NQ.F")
         dx = get_one("DX.F")
         if not dx.get("ok"):
-            dx = get_one("USD_I")  # фолбэк
+            dx = get_one("USD_I")
 
         def lean(sense: Optional[str]) -> int:
             return 1 if sense == "up" else -1 if sense == "down" else 0
@@ -590,29 +755,25 @@ class MarketIntel:
         regressor = lean(es.get("sense")) + lean(nq.get("sense")) - lean(dx.get("sense"))
         return {"ES": es, "NQ": nq, "DXY": dx, "macro_lean_score": regressor}
 
-    # ---- Компоновка полного снапшота ----
+    # ---- Компоновка снапшота ----
 
-    def snapshot(self, symbol: str = "BTCUSDT", lookback_hours: float = 2.0,
-                 asof_utc: Optional[datetime] = None) -> Dict[str, Any]:
+    def snapshot(self, symbol: str = "BTCUSDT", lookback_hours: float = 2.0, asof_utc: Optional[datetime] = None) -> Dict[str, Any]:
         if asof_utc is None:
             asof_utc = datetime.now(timezone.utc)
 
-        # Базовые блоки (Binance)
         price = self.price_block(symbol, lookback_hours, interval="5m")
         open_interest = self.open_interest_block(symbol, lookback_hours, period="5m")
         funding, basis = self.funding_basis_block(symbol)
         flows = self.flows_block(spot_symbol="BTCUSDT", perp_symbol=symbol, lookback_hours=lookback_hours)
         orderbook = self.orderbook_block(spot_symbol="BTCUSDT", use_price=price.get("close") if price else None)
 
-        # Новые блоки
         x_perp = self.cross_exchange_perp_snapshot(symbol_binance=symbol, bybit_symbol="BTCUSDT", okx_inst="BTC-USDT-SWAP", deribit_instr="BTC-PERPETUAL")
         cal_basis = self.calendar_basis_block(pair="BTCUSDT", interval="5m", lookback_hours=lookback_hours)
         sent = self.sentiment_ratios_block(symbol=symbol, period="5m", lookback_points=int(lookback_hours * 12))
         breadth = self.market_breadth_spot_usdt(top_n_by_quote_vol=50)
         stables = self.stablecoin_deviation()
-        macro = self.macro_weather_block()  # ES/NQ/DXY
+        macro = self.macro_weather_block()
 
-        # Подсказки (минимальная эвристика)
         hints: List[str] = []
         if open_interest and isinstance(open_interest.get("oi_change_pct"), float):
             if open_interest["oi_change_pct"] < 0:
@@ -624,9 +785,6 @@ class MarketIntel:
                 hints.append("Базис расширяется вверх — поддерживает бычий сценарий.")
             elif basis["basis_change_abs"] < 0:
                 hints.append("Базис сжимается — осторожность.")
-        if funding and isinstance(funding.get("last_funding_rate"), float) and math.isfinite(funding["last_funding_rate"]):
-            if funding["last_funding_rate"] > 0 and flows.get("perp", {}).get("taker_net_quote", 0) > 0:
-                hints.append("Рост на перпах при положительном funding — движение может быть хрупким.")
         if isinstance(macro.get("macro_lean_score"), int):
             if macro["macro_lean_score"] > 0:
                 hints.append("ES/NQ вверх и/или DXY вниз — внешний фон поддерживает рост крипто.")
@@ -643,7 +801,6 @@ class MarketIntel:
             "basis": basis,
             "flows": flows,
             "orderbook": orderbook,
-            # Новые секции:
             "x_perp": x_perp,
             "calendar_basis": cal_basis,
             "sentiment": sent,
@@ -652,4 +809,3 @@ class MarketIntel:
             "macro_weather": macro,
             "hints": hints,
         }
-
