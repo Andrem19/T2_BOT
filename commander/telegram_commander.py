@@ -37,13 +37,20 @@ async def rem():
         # Абсолютный путь
         abs_path = os.path.abspath(path)
         
-        # Удаляем файл, если существует
+        # Текущая директория запуска
+        base_dir = os.getcwd()
+        
+        # Относительный путь
+        rel_path = os.path.relpath(abs_path, base_dir)
+        
+        # Если файл существует — очищаем его содержимое
         if os.path.exists(abs_path):
-            os.remove(abs_path)
+            open(abs_path, "w").close()
             await tel.send_inform_message("COLLECTOR_API", f"{path} REMOVED!", "", False)
         else:
+            # Если файла нет — создаём пустой
+            open(abs_path, "w").close()
             await tel.send_inform_message("COLLECTOR_API", f"{path} NOT EXIST!", "", False)
-        
         
     except Exception as e:
         await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
