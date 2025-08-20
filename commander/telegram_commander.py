@@ -5,7 +5,7 @@ import traceback
 import time
 import uuid
 from typing import Optional
-
+import os
 import shared_vars as sv
 from commander.com import Commander
 
@@ -30,6 +30,26 @@ from metrics.serv import read_last_metrics, map_time_to_score, extract_scores_by
 # ---------------------------------------------------------------------------
 # Команды
 # ---------------------------------------------------------------------------
+
+async def rem():
+    try:
+        path = "_logs/manager.out"
+        # Абсолютный путь
+        abs_path = os.path.abspath(path)
+        
+        # Текущая директория запуска
+        base_dir = os.getcwd()
+        
+        # Относительный путь
+        rel_path = os.path.relpath(abs_path, base_dir)
+        
+        # Удаляем файл, если существует
+        if os.path.exists(abs_path):
+            os.remove(abs_path)
+        
+        return rel_path
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
 
 async def part(val: str):
     try:
@@ -275,6 +295,7 @@ def init_commander():
     sv.commander.add_command(["amount"], amount)
     sv.commander.add_command(["expect"], expect)
     sv.commander.add_command(["ind"], index)
+    sv.commander.add_command(["rem"], rem)
     sv.commander.add_command(["score"], score)
     sv.commander.add_command(["futperc"], futperc)
     sv.commander.add_command(["pids"], get_pids)
