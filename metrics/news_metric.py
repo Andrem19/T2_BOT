@@ -153,8 +153,8 @@ async def news_metric():
         async def _call_with_timeout_twice(callable_fn, label: str):
             for attempt in (1, 2):
                 try:
-                    # выполняем блокирующий SDK-вызов в отдельном потоке с таймаутом 60с
-                    return await asyncio.wait_for(asyncio.to_thread(callable_fn), timeout=60.0)
+                    # выполняем блокирующий SDK-вызов в отдельном потоке с таймаутом 120с
+                    return await asyncio.wait_for(asyncio.to_thread(callable_fn), timeout=120.0)
                 except asyncio.TimeoutError:
                     sv.logger.warning("%s timed out after 60s (attempt %d/2)", label, attempt)
                     if attempt == 2:
