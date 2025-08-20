@@ -747,30 +747,143 @@ class MarketIntel:
                 "_window_ms": (end_ms - start_ms)}
         return results, meta
 
-    def flows_block(self, spot_symbol: str, perp_symbol: str, lookback_hours: float) -> Dict[str, Any]:
-        spot_tr, spot_meta = self._collect_agg_trades_safe(self.binance.spot_agg_trades, spot_symbol, lookback_hours)
-        perp_tr, perp_meta = self._collect_agg_trades_safe(self.binance.fapi_agg_trades,  perp_symbol,  lookback_hours)
+    # def flows_block(self, spot_symbol: str, perp_symbol: str, lookback_hours: float) -> Dict[str, Any]:
+    #     spot_tr, spot_meta = self._collect_agg_trades_safe(self.binance.spot_agg_trades, spot_symbol, lookback_hours)
+    #     perp_tr, perp_meta = self._collect_agg_trades_safe(self.binance.fapi_agg_trades,  perp_symbol,  lookback_hours)
 
-        sb, ss = _sum_quote_from_aggtrades(spot_tr)
-        pb, ps = _sum_quote_from_aggtrades(perp_tr)
+    #     sb, ss = _sum_quote_from_aggtrades(spot_tr)
+    #     pb, ps = _sum_quote_from_aggtrades(perp_tr)
+
+    #     spot_net = sb - ss
+    #     perp_net = pb - ps
+    #     return {
+    #         "spot": {
+    #             "taker_buy_quote": sb, "taker_sell_quote": ss, "taker_net_quote": spot_net,
+    #             "sense": "net_taker_buy" if spot_net > 0 else "net_taker_sell" if spot_net < 0 else "balanced",
+    #         },
+    #         "perp": {
+    #             "taker_buy_quote": pb, "taker_sell_quote": ps, "taker_net_quote": perp_net,
+    #             "sense": "net_taker_buy" if perp_net > 0 else "net_taker_sell" if perp_net < 0 else "balanced",
+    #         },
+    #         "spot_vs_perp": {
+    #             "spot_net_minus_perp_net": spot_net - perp_net,
+    #             "spot_stronger_than_perp": (spot_net > perp_net),
+    #         },
+    #         "_meta": {"spot": spot_meta, "perp": perp_meta}
+    #     }
+    def flows_block(self, spot_symbol: str, perp_symbol: str, lookback_hours: float) -> Dict[str, Any]:
+        """
+        Быстрый расчёт тэйкерных потоков в $ по споту и перпету через Klines:
+          - taker_buy_quote: сумма 'taker buy quote asset volume' за окно
+          - taker_sell_quote: total_quote - taker_buy_quote
+          - taker_net_quote: разница покупок и продаж тэйкеров
+        Возвращает ту же структуру полей, что и прежняя версия на aggTrades.
+        """
+        end_ms = _now_ms()
+        start_ms = end_ms - int(lookback_hours * 3_600_000)
+
+        # Подбираем минимальный интервал, чтобы уложиться в 1000 баров (лимит Binance)
+        def _choose_interval(window_ms: int) -> Tuple[str, int]:
+            # (interval_str, interval_ms) — отсортировано от более тонкого к более грубому
+            candidates = [
+                ("1m",   60_000),
+                ("3m",  180_000),
+                ("5m",  300_000),
+                ("15m", 900_000),
+                ("30m", 1_800_000),
+                ("1h",  3_600_000),
+            ]
+            for iv, ms in candidates:
+                # +1 бар на хвост, чтобы точно покрыть окно
+                need = (window_ms + ms - 1) // ms + 1
+                if need <= 1000:
+                    return iv, ms
+            return "1h", 3_600_000  # крайний случай (длинные окна)
+
+        interval, _ = _choose_interval(end_ms - start_ms)
+
+        def _sum_from_klines(klines: List[List[Any]]) -> Tuple[float, float, Dict[str, Any]]:
+            """
+            Возвращает (taker_buy_quote, taker_sell_quote, meta)
+            Индексы Binance Klines:
+              [7]  = quote asset volume
+              [10] = taker buy quote asset volume
+              [0]  = open time (ms)
+              [6]  = close time (ms)
+            """
+            total_quote = 0.0
+            taker_buy_quote = 0.0
+            t_start = klines[0][0] if klines else None
+            t_end = klines[-1][6] if klines and len(klines[-1]) > 6 else (klines[-1][0] if klines else None)
+            for k in klines:
+                q_all = _safe_float(k[7])
+                q_tbq = _safe_float(k[10])
+                if math.isfinite(q_all):
+                    total_quote += q_all
+                if math.isfinite(q_tbq):
+                    taker_buy_quote += q_tbq
+            taker_sell_quote = total_quote - taker_buy_quote
+            meta = {
+                "source": "klines",
+                "interval": interval,
+                "bars": len(klines),
+                "t_start": t_start,
+                "t_end": t_end,
+                "_calls_made": 1 if klines else 0,
+                "_max_calls": 1,
+                "_partial": False,
+                "_window_ms": (end_ms - start_ms),
+            }
+            return taker_buy_quote, taker_sell_quote, meta
+
+        # --- Загрузка Klines ---
+        # Spot klines (через self.binance.spot Http-клиент)
+        spot_kl = []
+        try:
+            spot_kl = self.binance.spot.get(
+                "/api/v3/klines",
+                {"symbol": spot_symbol, "interval": interval, "startTime": start_ms, "endTime": end_ms, "limit": 1000},
+            ) or []
+            # Binance может вернуть больше, чем нужно — обрежем строго по окну
+            spot_kl = [k for k in spot_kl if isinstance(k, list) and k and start_ms <= int(k[0]) <= end_ms]
+        except Exception as e:
+            spot_kl = []
+
+        # Perp klines (USD-M futures)
+        perp_kl = []
+        try:
+            perp_kl = self.binance.fapi_klines(perp_symbol, interval, start_ms, end_ms, limit=1000) or []
+            perp_kl = [k for k in perp_kl if isinstance(k, list) and k and start_ms <= int(k[0]) <= end_ms]
+        except Exception as e:
+            perp_kl = []
+
+        # --- Агрегация ---
+        sb, ss, spot_meta = _sum_from_klines(spot_kl)
+        pb, ps, perp_meta = _sum_from_klines(perp_kl)
 
         spot_net = sb - ss
         perp_net = pb - ps
+
         return {
             "spot": {
-                "taker_buy_quote": sb, "taker_sell_quote": ss, "taker_net_quote": spot_net,
+                "taker_buy_quote": sb,
+                "taker_sell_quote": ss,
+                "taker_net_quote": spot_net,
                 "sense": "net_taker_buy" if spot_net > 0 else "net_taker_sell" if spot_net < 0 else "balanced",
             },
             "perp": {
-                "taker_buy_quote": pb, "taker_sell_quote": ps, "taker_net_quote": perp_net,
+                "taker_buy_quote": pb,
+                "taker_sell_quote": ps,
+                "taker_net_quote": perp_net,
                 "sense": "net_taker_buy" if perp_net > 0 else "net_taker_sell" if perp_net < 0 else "balanced",
             },
             "spot_vs_perp": {
                 "spot_net_minus_perp_net": spot_net - perp_net,
                 "spot_stronger_than_perp": (spot_net > perp_net),
             },
-            "_meta": {"spot": spot_meta, "perp": perp_meta}
+            "_meta": {"spot": spot_meta, "perp": perp_meta},
         }
+
 
     def orderbook_block(self, spot_symbol: str, use_price: Optional[float] = None) -> Dict[str, Any]:
         depth = self.binance.spot_depth(spot_symbol, limit=5000)

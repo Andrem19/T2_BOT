@@ -289,7 +289,7 @@ class HourlyAt57Scheduler:
             _logger.info("Запуск hourly job run_id=%s на %s", run_id, started_local)
 
             dt = datetime.now(timezone.utc)
-            news_score = await news_metric() if dt.hour not in [2, 3, 4, 5, 6, 7] and dt.weekday() not in [5] else {'score': 0}
+            news_score = await news_metric()
             # 1) task_one (await)
             t1_res: Dict[str, Any] = await task_one()
 
