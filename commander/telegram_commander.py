@@ -25,12 +25,21 @@ from database.simulation import Simulation
 import services.serv as serv
 from helpers.statistics import compute_trade_stats, visualize_trade_stats
 from commander.service import format_trades_report, tail_log
-
+from metrics.serv import read_last_metrics, map_time_to_score
 
 # ---------------------------------------------------------------------------
 # Команды
 # ---------------------------------------------------------------------------
 
+async def index(hours: str):
+    try:
+        items = read_last_metrics(int(hours), path="metrics.json")
+        time_to_score = map_time_to_score(items)
+        pretty_str = tools.dict_to_pretty_string(time_to_score)
+        await tel.send_inform_message("COLLECTOR_API", f"{pretty_str}", "", False)
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
+    
 
 async def wings(val_1: str, val_2: str):
     try:
@@ -249,6 +258,7 @@ def init_commander():
     sv.commander.add_command(["timer"], timer)
     sv.commander.add_command(["amount"], amount)
     sv.commander.add_command(["expect"], expect)
+    sv.commander.add_command(["ind"], index)
     sv.commander.add_command(["futperc"], futperc)
     sv.commander.add_command(["pids"], get_pids)
     sv.commander.add_command(["com"], commands_db)
