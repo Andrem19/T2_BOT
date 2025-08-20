@@ -17,7 +17,7 @@ from helpers.metrics import analyze_option_slice, pic_best_opt
 from database.hist_trades import Trade
 from database.simulation import Simulation
 from commander.service import format_trades_report
-
+from metrics.hourly_scheduler import start_hourly_57_scheduler
 
 START_DATE  = "01-01-2024"
 END_DATE    = "01-01-2025"
@@ -44,12 +44,20 @@ perc_tp = [0.02, 0.025, 0.03, 0.04]
 
 
 async def main():
+    start_hourly_57_scheduler(
+        metrics_filename="metrics.json",
+        allow_overlap=False,
+        warn_after_sec=240,
+        worker_max_workers=1
+    )
+    while True:
+       await asyncio.sleep(2)
     # fut_full_amt = (0.005*2)
     # fut_amt = tools.qty_for_target_profit(115440, 0.0153, 6.15*2*1.10)
     # second_stage_qty = fut_full_amt - fut_amt
     # print(fut_full_amt, fut_amt, second_stage_qty)
-    pos = HL.place_limit_post_only('BTCUSDT', 'Buy', 113200, 0, 0.001, False, 1)
-    print(pos)
+    # pos = HL.place_limit_post_only('BTCUSDT', 'Buy', 113200, 0, 0.001, False, 1)
+    # print(pos)
     # res = HL.open_SL_position('BTCUSDT', 'Buy', 113961, 0.011, 1)
     # res = HL.open_TP_position('BTCUSDT', 'Buy', 113961, 0.011, 1)
     # print(res)
