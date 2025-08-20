@@ -54,7 +54,7 @@ async def news_metric():
                 "}\n"
                 "No markdown, no extra text."
             )
-            max_tokens = 2000
+            max_tokens = 5000
         else:
             # Минимальный ответ в дорогие часы
             user_msg = (
