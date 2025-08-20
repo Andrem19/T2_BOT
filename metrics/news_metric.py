@@ -222,7 +222,7 @@ async def news_metric():
         sv.logger.info("ФИНАЛЬНЫЙ SCORE: %s", final_score)
 
         # В COLLECTOR — сырой полный ответ модели
-        await safe_send('COLLECTOR_API', final_raw, '', False)
+        await safe_send('COLLECTOR_API', f'{used_model}\n{final_raw}', '', False)
         return final_data
 
     except Exception as e:
