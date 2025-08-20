@@ -43,6 +43,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
             sv.stages[which_pos_we_need]['base_coin'] = position['name']
             sv.stages[which_pos_we_need]['position']['exist'] = True
             sv.stages[which_pos_we_need]['position']['position_info'] = new_position
+            sv.stages[which_pos_we_need]['position']['fut_full_amt'] = fut_full_amt
                 
             entry_px = float(new_position['entryPx'])
             size_px  = float(new_position['size'])
@@ -65,6 +66,7 @@ async def open_futures(position: dict, which_pos_we_need: str):
                 HL.place_limit_post_only(symbol, side, add_price, 0, second_stage_qty, False, acc)
                 logger.info(f"{which_pos_we_need} add position order is opened")
             else:
+                sv.stages[which_pos_we_need]['position']['second_stage_px'] = 0
                 logger.info(f"{which_pos_we_need} quantity to small for add order {second_stage_qty} partial_pos is {sv.partial_pos}")
             
             open_time = HL.get_open_time(symbol, acc)

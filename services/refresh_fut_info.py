@@ -23,6 +23,9 @@ async def refresh_fut(counter):
                     else:
                         sv.stages[stage_key]['position']['exist'] = True
                         sv.stages[stage_key]["position"]["position_info"] = position
+                        
+                        if round(abs(sv.stages[stage_key]['position']['fut_full_amt']), 4) == round(abs(position['size']), 4):
+                            sv.stages[stage_key]['position']['second_stage_px'] = 0
                 # Рассчитываем промежуточный PnL между обновлениями
                 else:
                     entry_price = sv.stages[stage_key]["position"]["position_info"].get("entryPx", 0)
