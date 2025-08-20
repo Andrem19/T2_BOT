@@ -197,7 +197,7 @@ async def close(pos) -> None:
         Commands.set_close_2(True)
 
 
-async def open(pos) -> None:
+async def op(pos) -> None:
     p=int(pos)
     if p == 1:
         Commands.set_close_1(False)
@@ -294,7 +294,7 @@ def init_commander():
     sv.commander = Commander(logs=True)
     sv.commander.add_command(["info"], info)
     sv.commander.add_command(["close"], close)
-    sv.commander.add_command(["open"], open)
+    sv.commander.add_command(["open"], op)
     sv.commander.add_command(["timer"], timer)
     sv.commander.add_command(["amount"], amount)
     sv.commander.add_command(["expect"], expect)
