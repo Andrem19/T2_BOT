@@ -108,3 +108,37 @@ def map_time_to_score(items: List[Dict[str, Any]]) -> Dict[str, float]:
         out[key] = score
 
     return out
+
+
+def extract_scores_by_time(entries: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+    result = {}
+
+    for entry in entries:
+        # Преобразуем время
+        raw_time = entry.get("time_utc")
+        if not raw_time:
+            continue
+        try:
+            dt = datetime.strptime(raw_time, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            continue  # Пропускаем неверный формат
+        formatted_time = dt.strftime("%d-%m-%y %H:%M:%S")
+
+        scores = {}
+
+        # Собираем оценки из per_metric
+        per_metric = entry.get("per_metric", {})
+        for metric_name, metric_data in per_metric.items():
+            score = metric_data.get("score")
+            if score is not None:
+                scores[metric_name] = round(score, 2)
+
+        # Добавим общий overall score
+        overall = entry.get("overall", {})
+        overall_score = overall.get("score")
+        if overall_score is not None:
+            scores["overall"] = round(overall_score, 2)
+
+        result[formatted_time] = scores
+
+    return result
