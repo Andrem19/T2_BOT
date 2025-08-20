@@ -10,10 +10,8 @@ intel.py — безопасный сборщик рыночных сигнало
 - Потокобезопасные FileCache, RateLimiter и Http (Session с пулом соединений).
 - Параллелизация независимых блоков snapshot() с соблюдением лимитов хостов.
 - Бережная обработка 429/Retry-After (экспоненциальный бэкофф с джиттером).
-- Адаптивный сбор aggTrades с бюджетом вызовов и кэшированием каждой страницы.
-
-Функциональность (как была): Binance (цена/OI/funding/basis/flows/depth/ratios),
-кросс-биржи (Bybit/OKX/Deribit), macro (ES/NQ/DXY со Stooq + fallback).
+- Потоки (flows_block) теперь считаются по Klines (taker buy/sell quote volumes) — значительно быстрее.
+- Подробное логирование времени выполнения по каждому запросу и каждому индикатору.
 """
 
 from __future__ import annotations
@@ -26,6 +24,7 @@ import math
 import random
 import hashlib
 import threading
+import logging
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -35,6 +34,15 @@ from urllib.parse import urlencode
 import requests
 from requests.adapters import HTTPAdapter
 
+# ---------------------------- ЛОГИРОВАНИЕ ------------------------------------
+_log = logging.getLogger("market_intel")
+if not _log.handlers:
+    # Не переопределяем глобальную конфигурацию, но добавим дефолт при прямом запуске.
+    handler = logging.StreamHandler(sys.stdout)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    handler.setFormatter(fmt)
+    _log.addHandler(handler)
+    _log.setLevel(logging.INFO)
 
 # =========================
 # Конфиг: кэш и лимиты
@@ -117,7 +125,7 @@ def endpoint_ttl_seconds(host: str, path: str, params: Dict[str, Any]) -> int:
     if p.endswith("/api/v3/depth"):
         return 5
     # Futures/spot klines
-    if p.endswith("/fapi/v1/klines"):
+    if p.endswith("/fapi/v1/klines") or p.endswith("/api/v3/klines"):
         return 3600  # 1 час
     # AggTrades — кэшируем на 2 часа для межчасового reuse
     if p.endswith("/api/v3/aggtrades") or p.endswith("/fapi/v1/aggtrades"):
@@ -148,8 +156,7 @@ class FileCache:
         # 3) Если совсем никак — кэш будет «пустым»
         self.root = root or ""
         if not self.root:
-            # Важно: продолжаем работу без кэша (это лучше, чем падать)
-            pass
+            _log.warning("FileCache: нет доступного каталога, кэш выключен.")
 
     def _ensure_writable(self, path: str) -> Optional[str]:
         try:
@@ -180,17 +187,21 @@ class FileCache:
             return None, True
         try:
             with self._lock:
+                t0 = time.perf_counter()
                 with open(path, "r", encoding="utf-8") as f:
                     obj = json.load(f)
+                dt = (time.perf_counter() - t0) * 1000
             exp = float(obj.get("expires", 0.0))
             is_expired = (exp < time.time())
             ctype = obj.get("ctype")
+            _log.debug(f"[CACHE READ] {path} in {dt:.2f}ms (expired={is_expired})")
             if ctype in ("json", "text"):
                 return obj.get("value"), is_expired
             return None, True
         except FileNotFoundError:
             return None, True
-        except Exception:
+        except Exception as e:
+            _log.warning(f"[CACHE READ ERROR] {path}: {e}")
             return None, True
 
     def get(self, key: str) -> Optional[Any]:
@@ -200,7 +211,7 @@ class FileCache:
     def set(self, key: str, value: Any, ttl_seconds: int, ctype: str):
         path = self._path_for(key)
         if not path:
-            return  # кэш выключен (нет доступного каталога)
+            return  # кэш выключен
         obj = {
             "expires": time.time() + max(1, int(ttl_seconds)),
             "ctype": ctype,
@@ -209,10 +220,14 @@ class FileCache:
         tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
         try:
             with self._lock:
+                t0 = time.perf_counter()
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(obj, f)
                 os.replace(tmp, path)
-        except Exception:
+                dt = (time.perf_counter() - t0) * 1000
+            _log.debug(f"[CACHE WRITE] {path} in {dt:.2f}ms (ttl={ttl_seconds}s)")
+        except Exception as e:
+            _log.warning(f"[CACHE WRITE ERROR] {path}: {e}")
             try:
                 if os.path.exists(tmp):
                     os.remove(tmp)
@@ -229,6 +244,8 @@ class FileCache:
         try:
             with self._lock:
                 names = list(os.listdir(self.root))
+            removed = 0
+            t0 = time.perf_counter()
             for name in names:
                 if not name.endswith(".json"):
                     continue
@@ -241,16 +258,21 @@ class FileCache:
                         with self._lock:
                             try:
                                 os.remove(path)
+                                removed += 1
                             except Exception:
                                 pass
                 except Exception:
                     try:
                         with self._lock:
                             os.remove(path)
+                            removed += 1
                     except Exception:
                         pass
-        except Exception:
-            pass
+            dt = (time.perf_counter() - t0) * 1000
+            if removed:
+                _log.info(f"[CACHE CLEANUP] removed={removed} in {dt:.1f}ms")
+        except Exception as e:
+            _log.warning(f"[CACHE CLEANUP ERROR] {e}")
 
 
 # =========================
@@ -278,18 +300,15 @@ class RateLimiter:
             sleep_for = 0.0
             with self._lock:
                 now = time.time()
-                # min-gap
                 gap = now - self._last_ts
                 if gap < self.min_gap:
                     sleep_for = self.min_gap - gap
                 else:
-                    # вес/мин
                     self._prune_locked(now)
                     if self._win_weight + weight > self.max_per_min:
                         oldest_ts = self._win[0][0] if self._win else now
                         sleep_for = max(0.05, 60.0 - (now - oldest_ts))
                     else:
-                        # можно проходить
                         self._win.append((now, weight))
                         self._win_weight += weight
                         self._last_ts = now
@@ -320,14 +339,13 @@ def _pct(a: float, b: float) -> float:
 
 
 # =========================
-# HTTP клиент (кэш + лимит + stale fallback + пул)
+# HTTP клиент (кэш + лимит + stale fallback + пул + тайминг)
 # =========================
 
 class Http:
     def __init__(self, base_url: str, cache: FileCache):
         self.base = base_url.rstrip("/")
         self.s = requests.Session()
-        # Пул соединений для многопоточности / keep-alive
         adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100, max_retries=0)
         self.s.mount("https://", adapter)
         self.s.mount("http://", adapter)
@@ -360,11 +378,14 @@ class Http:
         return f"{self.base}{path}{q}"
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None) -> Any:
+        start_total = time.perf_counter()
         key = self._make_key(path, params)
         ttl = endpoint_ttl_seconds(self.host, path, params or {})
-        # Пробуем кэш (с метаданными, чтобы уметь отдать «просрочку» при аварии)
+
         cached_val, cached_expired = self.cache.get_with_meta(key)
         if cached_val is not None and not cached_expired:
+            dt = (time.perf_counter() - start_total) * 1000
+            _log.info(f"[HTTP] {self.host}{path} CACHE_HIT fresh in {dt:.1f}ms params={params}")
             return cached_val
 
         url = f"{self.base}{path}"
@@ -372,16 +393,18 @@ class Http:
         last_err = None
         backoff = self.base_backoff
 
-        for _ in range(self.max_retries + 1):
+        for attempt in range(self.max_retries + 1):
             self.limiter.acquire(w)
             try:
                 with self._io_lock:
+                    t_req = time.perf_counter()
                     r = self.s.get(
                         url,
                         params=params,
                         headers={**self.default_headers, **(headers or {})},
                         timeout=(self.timeout_connect, self.timeout_read),
                     )
+                dt_req = (time.perf_counter() - t_req) * 1000
                 if r.status_code == 429:
                     ra = r.headers.get("Retry-After")
                     if ra:
@@ -392,6 +415,7 @@ class Http:
                     else:
                         wait = backoff
                     wait = min(wait + random.uniform(0, self.small_jitter), self.max_backoff)
+                    _log.warning(f"[HTTP] {self.host}{path} 429 in {dt_req:.1f}ms; retry-after={wait:.2f}s attempt={attempt+1}")
                     time.sleep(wait)
                     backoff = min(backoff * 2.0, self.max_backoff)
                     continue
@@ -400,23 +424,30 @@ class Http:
                 r.raise_for_status()
 
                 ctype = (r.headers.get("Content-Type") or "").lower()
+                size = len(r.content or b"")
                 if "application/json" in ctype:
                     val = r.json()
                     self.cache.set(key, val, ttl, "json")
+                    dt_total = (time.perf_counter() - start_total) * 1000
+                    _log.info(f"[HTTP] {self.host}{path} NET_OK {r.status_code} in {dt_req:.1f}ms total={dt_total:.1f}ms size={size} params={params}")
                     return val
                 # текст (CSV Stooq и т.п.)
                 txt = r.text
                 self.cache.set(key, txt, ttl, "text")
+                dt_total = (time.perf_counter() - start_total) * 1000
+                _log.info(f"[HTTP] {self.host}{path} NET_OK {r.status_code} in {dt_req:.1f}ms total={dt_total:.1f}ms size={size} params={params}")
                 return txt
 
             except requests.RequestException as e:
                 last_err = e
                 wait = min(backoff + random.uniform(0, self.small_jitter), self.max_backoff)
+                _log.warning(f"[HTTP] {self.host}{path} ERROR attempt={attempt+1}: {e}; backoff={wait:.2f}s params={params}")
                 time.sleep(wait)
                 backoff = min(backoff * 2.0, self.max_backoff)
 
-        # Все попытки не удались — если в кэше была просроченная копия, отдадим её.
         if cached_val is not None:
+            dt_total = (time.perf_counter() - start_total) * 1000
+            _log.warning(f"[HTTP] {self.host}{path} NET_FAIL, using STALE cache in {dt_total:.1f}ms params={params}")
             return cached_val
 
         raise RuntimeError(f"GET failed {url} params={params}: {last_err}")
@@ -446,14 +477,13 @@ class BinancePublic:
         return self.fapi.get("/fapi/v1/premiumIndex", {"symbol": symbol} if symbol else {})
 
     def fapi_premium_index_klines(self, symbol: str, interval: str, start_time: int, end_time: int, limit: int = 500) -> List[list]:
-        # Важно: endTime (не EndTime)
         return self.fapi.get("/fapi/v1/premiumIndexKlines", {"symbol": symbol, "interval": interval, "startTime": start_time, "endTime": end_time, "limit": limit})
 
     def fapi_continuous_klines(self, pair: str, contract_type: str, interval: str, start_time: int, end_time: int, limit: int = 500) -> List[list]:
-        return self.fapi.get("/fapi/v1/continuousKlines", {"pair": pair, "contractType": contract_type, "interval": interval, "startTime": start_time, "endTime": end_time, "limit": limit})
+        return self.fapi.get("/fapi/v1/continuousKlines", {"pair": pair, "contractType": contract_type, "interval": interval, "startTime": start_time, "EndTime": end_time, "limit": limit})
 
     def fapi_index_price_klines(self, pair: str, interval: str, start_time: int, end_time: int, limit: int = 500) -> List[list]:
-        return self.fapi.get("/fapi/v1/indexPriceKlines", {"pair": pair, "interval": interval, "startTime": start_time, "endTime": end_time, "limit": limit})
+        return self.fapi.get("/fapi/v1/indexPriceKlines", {"pair": pair, "interval": interval, "startTime": start_time, "EndTime": end_time, "limit": limit})
 
     # OI / ratios
     def fapi_open_interest_hist(self, symbol: str, period: str, start_time: int, end_time: int, limit: int = 200) -> List[Dict[str, Any]]:
@@ -638,71 +668,87 @@ class MarketIntel:
         self.deribit = DeribitPublic(self.cache)
         self.stooq = StooqPublic(self.cache)
 
-        # Бюджет aggTrades на сторону в одном снапшоте
+        # Бюджет aggTrades (сохраняем параметры, хотя flows теперь через klines)
         self.max_agg_calls_per_side = int(os.environ.get("INTEL_MAX_AGG_CALLS", "20"))
         self.agg_throttle_range = (0.05, 0.15)
 
     # ---- БАЗОВЫЕ БЛОКИ Binance ----
 
     def price_block(self, symbol: str, lookback_hours: float, interval: str = "5m") -> Dict[str, Any]:
-        end = _now_ms(); start = end - int(lookback_hours * 3_600_000)
-        kl = self.binance.fapi_klines(symbol, interval, start, end)
-        if not kl:
-            return {}
-        o = _safe_float(kl[0][1]); c = _safe_float(kl[-1][4])
-        chg = _pct(o, c)
-        return {"open": o, "close": c, "change_pct": chg, "bars": len(kl),
-                "t_start": kl[0][0], "t_end": kl[-1][6] if len(kl[-1]) > 6 else kl[-1][0]}
+        t0 = time.perf_counter()
+        try:
+            end = _now_ms(); start = end - int(lookback_hours * 3_600_000)
+            kl = self.binance.fapi_klines(symbol, interval, start, end)
+            if not kl:
+                _log.info(f"[INDICATOR price_block] bars=0 took {(time.perf_counter()-t0)*1000:.1f}ms")
+                return {}
+            o = _safe_float(kl[0][1]); c = _safe_float(kl[-1][4])
+            chg = _pct(o, c)
+            out = {"open": o, "close": c, "change_pct": chg, "bars": len(kl),
+                   "t_start": kl[0][0], "t_end": kl[-1][6] if len(kl[-1]) > 6 else kl[-1][0]}
+            return out
+        finally:
+            _log.info(f"[INDICATOR price_block] done in {(time.perf_counter()-t0)*1000:.1f}ms")
 
     def open_interest_block(self, symbol: str, lookback_hours: float, period: str = "5m") -> Dict[str, Any]:
-        end = _now_ms(); start = end - int(lookback_hours * 3_600_000)
-        hist = self.binance.fapi_open_interest_hist(symbol, period, start, end, limit=200)
-        if not hist:
-            return {}
-        oi_then = _safe_float(hist[0].get("sumOpenInterest"))
-        oi_now  = _safe_float(hist[-1].get("sumOpenInterest"))
-        chg = _pct(oi_then, oi_now)
-        return {"oi_then": oi_then, "oi_now": oi_now, "oi_change_pct": chg, "points": len(hist),
-                "t_start": int(hist[0].get("timestamp") or 0), "t_end": int(hist[-1].get("timestamp") or 0)}
+        t0 = time.perf_counter()
+        try:
+            end = _now_ms(); start = end - int(lookback_hours * 3_600_000)
+            hist = self.binance.fapi_open_interest_hist(symbol, period, start, end, limit=200)
+            if not hist:
+                _log.info(f"[INDICATOR open_interest_block] points=0 took {(time.perf_counter()-t0)*1000:.1f}ms")
+                return {}
+            oi_then = _safe_float(hist[0].get("sumOpenInterest"))
+            oi_now  = _safe_float(hist[-1].get("sumOpenInterest"))
+            chg = _pct(oi_then, oi_now)
+            out = {"oi_then": oi_then, "oi_now": oi_now, "oi_change_pct": chg, "points": len(hist),
+                   "t_start": int(hist[0].get("timestamp") or 0), "t_end": int(hist[-1].get("timestamp") or 0)}
+            return out
+        finally:
+            _log.info(f"[INDICATOR open_interest_block] done in {(time.perf_counter()-t0)*1000:.1f}ms")
 
     def funding_basis_block(self, symbol: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        pi = self.binance.fapi_premium_index(symbol)
-        end = _now_ms(); start = end - 3_600_000
-        pik = self.binance.fapi_premium_index_klines(symbol, "5m", start, end, limit=24)
-        basis_last_close = _safe_float(pik[-1][4]) if pik else float("nan")
-        basis_then_open  = _safe_float(pik[0][1]) if pik else float("nan")
-        basis_now = float("nan")
-        if pi:
-            mark = _safe_float(pi.get("markPrice"))
-            index = _safe_float(pi.get("indexPrice"))
-            if math.isfinite(mark) and math.isfinite(index) and index != 0:
-                basis_now = (mark - index) / index
-        funding_rate = _safe_float(pi.get("lastFundingRate")) if pi else float("nan")
-        who_pays = None
-        if math.isfinite(funding_rate):
-            who_pays = "longs_pay_shorts" if funding_rate > 0 else "shorts_pay_longs" if funding_rate < 0 else "neutral"
-        funding = {
-            "rates": [], "avg_rate": float("nan"),
-            "last_funding_rate": funding_rate, "who_pays_now": who_pays,
-            "mark_price": _safe_float(pi.get("markPrice")) if pi else float("nan"),
-            "index_price": _safe_float(pi.get("indexPrice")) if pi else float("nan"),
-            "snapshot_time": int(pi.get("time") or 0) if pi else None,
-        }
-        basis = {
-            "basis_now": basis_now,
-            "basis_last_close": basis_last_close,
-            "basis_then_open": basis_then_open,
-            "basis_change_abs": (basis_now - basis_then_open) if (math.isfinite(basis_now) and math.isfinite(basis_then_open)) else float("nan"),
-            "bars": len(pik),
-        }
-        return funding, basis
+        t0 = time.perf_counter()
+        try:
+            pi = self.binance.fapi_premium_index(symbol)
+            end = _now_ms(); start = end - 3_600_000
+            pik = self.binance.fapi_premium_index_klines(symbol, "5m", start, end, limit=24)
+            basis_last_close = _safe_float(pik[-1][4]) if pik else float("nan")
+            basis_then_open  = _safe_float(pik[0][1]) if pik else float("nan")
+            basis_now = float("nan")
+            if pi:
+                mark = _safe_float(pi.get("markPrice"))
+                index = _safe_float(pi.get("indexPrice"))
+                if math.isfinite(mark) and math.isfinite(index) and index != 0:
+                    basis_now = (mark - index) / index
+            funding_rate = _safe_float(pi.get("lastFundingRate")) if pi else float("nan")
+            who_pays = None
+            if math.isfinite(funding_rate):
+                who_pays = "longs_pay_shorts" if funding_rate > 0 else "shorts_pay_longs" if funding_rate < 0 else "neutral"
+            funding = {
+                "rates": [], "avg_rate": float("nan"),
+                "last_funding_rate": funding_rate, "who_pays_now": who_pays,
+                "mark_price": _safe_float(pi.get("markPrice")) if pi else float("nan"),
+                "index_price": _safe_float(pi.get("indexPrice")) if pi else float("nan"),
+                "snapshot_time": int(pi.get("time") or 0) if pi else None,
+            }
+            basis = {
+                "basis_now": basis_now,
+                "basis_last_close": basis_last_close,
+                "basis_then_open": basis_then_open,
+                "basis_change_abs": (basis_now - basis_then_open) if (math.isfinite(basis_now) and math.isfinite(basis_then_open)) else float("nan"),
+                "bars": len(pik),
+            }
+            return funding, basis
+        finally:
+            _log.info(f"[INDICATOR funding_basis_block] done in {(time.perf_counter()-t0)*1000:.1f}ms")
 
-    # --- Кэш-дружественный сбор aggTrades ---
+    # --- Кэш-дружественный сбор aggTrades (оставлено для совместимости) ---
     def _collect_agg_trades_safe(self, fetch_fn, symbol: str, lookback_hours: float) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        t0 = time.perf_counter()
         end_ms = _now_ms()
         start_ms = end_ms - int(lookback_hours * 3_600_000)
 
-        # Выравнивание по 1 минуте, базовый chunk 5 минут
         MIN_UNIT = 60_000
         CHUNK = 5 * MIN_UNIT
 
@@ -712,7 +758,7 @@ class MarketIntel:
         cur = align_down(start_ms, MIN_UNIT)
         end_aligned = align_down(end_ms, MIN_UNIT)
 
-        chunks: List[Tuple[int, int, int]] = []  # (start, end, size_ms)
+        chunks: List[Tuple[int, int, int]] = []
         while cur < end_aligned:
             a = cur
             b = min(end_aligned, a + CHUNK)
@@ -745,46 +791,24 @@ class MarketIntel:
         results = [t for t in results if int(t.get("T") or t.get("time") or 0) >= start_ms]
         meta = {"_calls_made": calls_made, "_max_calls": self.max_agg_calls_per_side, "_partial": partial,
                 "_window_ms": (end_ms - start_ms)}
+        _log.info(f"[COMPAT aggTrades] calls={calls_made} partial={partial} window_ms={(end_ms-start_ms)} took {(time.perf_counter()-t0)*1000:.1f}ms")
         return results, meta
 
-    # def flows_block(self, spot_symbol: str, perp_symbol: str, lookback_hours: float) -> Dict[str, Any]:
-    #     spot_tr, spot_meta = self._collect_agg_trades_safe(self.binance.spot_agg_trades, spot_symbol, lookback_hours)
-    #     perp_tr, perp_meta = self._collect_agg_trades_safe(self.binance.fapi_agg_trades,  perp_symbol,  lookback_hours)
-
-    #     sb, ss = _sum_quote_from_aggtrades(spot_tr)
-    #     pb, ps = _sum_quote_from_aggtrades(perp_tr)
-
-    #     spot_net = sb - ss
-    #     perp_net = pb - ps
-    #     return {
-    #         "spot": {
-    #             "taker_buy_quote": sb, "taker_sell_quote": ss, "taker_net_quote": spot_net,
-    #             "sense": "net_taker_buy" if spot_net > 0 else "net_taker_sell" if spot_net < 0 else "balanced",
-    #         },
-    #         "perp": {
-    #             "taker_buy_quote": pb, "taker_sell_quote": ps, "taker_net_quote": perp_net,
-    #             "sense": "net_taker_buy" if perp_net > 0 else "net_taker_sell" if perp_net < 0 else "balanced",
-    #         },
-    #         "spot_vs_perp": {
-    #             "spot_net_minus_perp_net": spot_net - perp_net,
-    #             "spot_stronger_than_perp": (spot_net > perp_net),
-    #         },
-    #         "_meta": {"spot": spot_meta, "perp": perp_meta}
-    #     }
+    # --- Быстрые потоки по Klines (НОВЫЙ flows_block) ---
     def flows_block(self, spot_symbol: str, perp_symbol: str, lookback_hours: float) -> Dict[str, Any]:
         """
-        Быстрый расчёт тэйкерных потоков в $ по споту и перпету через Klines:
+        Тэйкерные потоки в $ по споту и перпету через Klines:
           - taker_buy_quote: сумма 'taker buy quote asset volume' за окно
           - taker_sell_quote: total_quote - taker_buy_quote
           - taker_net_quote: разница покупок и продаж тэйкеров
         Возвращает ту же структуру полей, что и прежняя версия на aggTrades.
+        Полное логирование времени загрузки и агрегации.
         """
+        t0_all = time.perf_counter()
         end_ms = _now_ms()
         start_ms = end_ms - int(lookback_hours * 3_600_000)
 
-        # Подбираем минимальный интервал, чтобы уложиться в 1000 баров (лимит Binance)
         def _choose_interval(window_ms: int) -> Tuple[str, int]:
-            # (interval_str, interval_ms) — отсортировано от более тонкого к более грубому
             candidates = [
                 ("1m",   60_000),
                 ("3m",  180_000),
@@ -794,23 +818,16 @@ class MarketIntel:
                 ("1h",  3_600_000),
             ]
             for iv, ms in candidates:
-                # +1 бар на хвост, чтобы точно покрыть окно
                 need = (window_ms + ms - 1) // ms + 1
                 if need <= 1000:
                     return iv, ms
-            return "1h", 3_600_000  # крайний случай (длинные окна)
+            return "1h", 3_600_000
 
         interval, _ = _choose_interval(end_ms - start_ms)
+        _log.info(f"[INDICATOR flows_block] interval={interval} window_ms={(end_ms-start_ms)} start")
 
-        def _sum_from_klines(klines: List[List[Any]]) -> Tuple[float, float, Dict[str, Any]]:
-            """
-            Возвращает (taker_buy_quote, taker_sell_quote, meta)
-            Индексы Binance Klines:
-              [7]  = quote asset volume
-              [10] = taker buy quote asset volume
-              [0]  = open time (ms)
-              [6]  = close time (ms)
-            """
+        def _sum_from_klines(klines: List[List[Any]], label: str) -> Tuple[float, float, Dict[str, Any]]:
+            t0 = time.perf_counter()
             total_quote = 0.0
             taker_buy_quote = 0.0
             t_start = klines[0][0] if klines else None
@@ -822,7 +839,8 @@ class MarketIntel:
                     total_quote += q_all
                 if math.isfinite(q_tbq):
                     taker_buy_quote += q_tbq
-            taker_sell_quote = total_quote - taker_buy_quote
+            taker_sell_quote = max(0.0, total_quote - taker_buy_quote)
+            dt = (time.perf_counter() - t0) * 1000
             meta = {
                 "source": "klines",
                 "interval": interval,
@@ -833,38 +851,44 @@ class MarketIntel:
                 "_max_calls": 1,
                 "_partial": False,
                 "_window_ms": (end_ms - start_ms),
+                "_aggregate_ms": dt,
             }
+            _log.info(f"[INDICATOR flows_block:{label}] bars={len(klines)} aggregate in {dt:.1f}ms "
+                      f"buy_quote={taker_buy_quote:.0f} sell_quote={taker_sell_quote:.0f}")
             return taker_buy_quote, taker_sell_quote, meta
 
         # --- Загрузка Klines ---
-        # Spot klines (через self.binance.spot Http-клиент)
-        spot_kl = []
+        t0_spot = time.perf_counter()
         try:
             spot_kl = self.binance.spot.get(
                 "/api/v3/klines",
                 {"symbol": spot_symbol, "interval": interval, "startTime": start_ms, "endTime": end_ms, "limit": 1000},
             ) or []
-            # Binance может вернуть больше, чем нужно — обрежем строго по окну
             spot_kl = [k for k in spot_kl if isinstance(k, list) and k and start_ms <= int(k[0]) <= end_ms]
         except Exception as e:
+            _log.warning(f"[INDICATOR flows_block:spot] ERROR load klines: {e}")
             spot_kl = []
+        dt_spot = (time.perf_counter() - t0_spot) * 1000
+        _log.info(f"[INDICATOR flows_block:spot] load klines in {dt_spot:.1f}ms bars={len(spot_kl)}")
 
-        # Perp klines (USD-M futures)
-        perp_kl = []
+        t0_perp = time.perf_counter()
         try:
             perp_kl = self.binance.fapi_klines(perp_symbol, interval, start_ms, end_ms, limit=1000) or []
             perp_kl = [k for k in perp_kl if isinstance(k, list) and k and start_ms <= int(k[0]) <= end_ms]
         except Exception as e:
+            _log.warning(f"[INDICATOR flows_block:perp] ERROR load klines: {e}")
             perp_kl = []
+        dt_perp = (time.perf_counter() - t0_perp) * 1000
+        _log.info(f"[INDICATOR flows_block:perp] load klines in {dt_perp:.1f}ms bars={len(perp_kl)}")
 
         # --- Агрегация ---
-        sb, ss, spot_meta = _sum_from_klines(spot_kl)
-        pb, ps, perp_meta = _sum_from_klines(perp_kl)
+        sb, ss, spot_meta = _sum_from_klines(spot_kl, "spot")
+        pb, ps, perp_meta = _sum_from_klines(perp_kl, "perp")
 
         spot_net = sb - ss
         perp_net = pb - ps
 
-        return {
+        out = {
             "spot": {
                 "taker_buy_quote": sb,
                 "taker_sell_quote": ss,
@@ -883,18 +907,24 @@ class MarketIntel:
             },
             "_meta": {"spot": spot_meta, "perp": perp_meta},
         }
-
+        _log.info(f"[INDICATOR flows_block] done in {(time.perf_counter()-t0_all)*1000:.1f}ms "
+                  f"spot_net={spot_net:.0f} perp_net={perp_net:.0f}")
+        return out
 
     def orderbook_block(self, spot_symbol: str, use_price: Optional[float] = None) -> Dict[str, Any]:
-        depth = self.binance.spot_depth(spot_symbol, limit=5000)
-        best_bid = _safe_float(depth.get("bids", [[math.nan]])[0][0])
-        best_ask = _safe_float(depth.get("asks", [[math.nan]])[0][0])
-        mid = use_price if (use_price and math.isfinite(use_price)) else (best_bid + best_ask) / 2.0
-        bands = {}
-        for pct_band in (0.005, 0.01):
-            k = f"{pct_band*100:.2f}%"
-            bands[k] = _orderbook_tilt(depth, mid, pct_band)
-        return {"mid": mid, "bands": bands}
+        t0 = time.perf_counter()
+        try:
+            depth = self.binance.spot_depth(spot_symbol, limit=5000)
+            best_bid = _safe_float(depth.get("bids", [[math.nan]])[0][0])
+            best_ask = _safe_float(depth.get("asks", [[math.nan]])[0][0])
+            mid = use_price if (use_price and math.isfinite(use_price)) else (best_bid + best_ask) / 2.0
+            bands = {}
+            for pct_band in (0.005, 0.01):
+                k = f"{pct_band*100:.2f}%"
+                bands[k] = _orderbook_tilt(depth, mid, pct_band)
+            return {"mid": mid, "bands": bands}
+        finally:
+            _log.info(f"[INDICATOR orderbook_block] done in {(time.perf_counter()-t0)*1000:.1f}ms")
 
     # ---- Кросс-биржи/календарь/рацио/ширина/стейблы/макро ----
 
@@ -902,6 +932,7 @@ class MarketIntel:
                                      bybit_symbol: str = "BTCUSDT",
                                      okx_inst: str = "BTC-USDT-SWAP",
                                      deribit_instr: str = "BTC-PERPETUAL") -> Dict[str, Any]:
+        t0 = time.perf_counter()
         out: Dict[str, Any] = {}
         try:
             b = self.binance.fapi_premium_index(symbol_binance)
@@ -948,14 +979,15 @@ class MarketIntel:
                 out["deribit"] = {"mark": mark, "index": index, "basis": basis, "fundingRate": None, "whoPays": None, "ts": int(d.get("timestamp") or 0)}
         except Exception as e:
             out["deribit"] = {"_partial": True, "_reason": str(e)}
+        _log.info(f"[INDICATOR cross_exchange_perp_snapshot] done in {(time.perf_counter()-t0)*1000:.1f}ms")
         return out
 
     def calendar_basis_block(self, pair: str = "BTCUSDT", interval: str = "5m", lookback_hours: float = 2.0) -> Dict[str, Any]:
-        end = _now_ms(); start = end - int(lookback_hours * 3_600_000)
+        t0 = time.perf_counter()
         def last_basis(contract_type: str) -> Dict[str, Any]:
             try:
-                fut = self.binance.fapi_continuous_klines(pair, contract_type, interval, start, end, limit=200)
-                idx = self.binance.fapi_index_price_klines(pair, interval, start, end, limit=200)
+                fut = self.binance.fapi_continuous_klines(pair, contract_type, interval, _now_ms()-int(lookback_hours*3_600_000), _now_ms(), limit=200)
+                idx = self.binance.fapi_index_price_klines(pair, interval, _now_ms()-int(lookback_hours*3_600_000), _now_ms(), limit=200)
             except Exception as e:
                 return {"_partial": True, "_reason": str(e), "bars": 0}
             if not fut or not idx:
@@ -966,13 +998,24 @@ class MarketIntel:
             then = (f_open0 - i_open0) / i_open0 if (math.isfinite(f_open0) and math.isfinite(i_open0) and i_open0) else float("nan")
             return {"basis_now": now, "basis_then_open": then, "basis_change_abs": (now - then) if math.isfinite(now) and math.isfinite(then) else float("nan"),
                     "bars": min(len(fut), len(idx))}
-        return {"current_quarter": last_basis("CURRENT_QUARTER"), "next_quarter": last_basis("NEXT_QUARTER")}
+        try:
+            out = {"current_quarter": last_basis("CURRENT_QUARTER"), "next_quarter": last_basis("NEXT_QUARTER")}
+            return out
+        finally:
+            _log.info(f"[INDICATOR calendar_basis_block] done in {(time.perf_counter()-t0)*1000:.1f}ms")
 
     def sentiment_ratios_block(self, symbol: str, period: str = "5m", lookback_points: int = 24) -> Dict[str, Any]:
-        end = _now_ms(); start = end - (lookback_points * _interval_to_ms(period))
+        t0 = time.perf_counter()
         def safeget(fn, **kw):
-            try: return fn(**kw)
-            except Exception as e: return {"_partial": True, "_reason": str(e)}
+            tcall = time.perf_counter()
+            try:
+                res = fn(**kw)
+                _log.info(f"[INDICATOR sentiment_call] {fn.__name__} took {(time.perf_counter()-tcall)*1000:.1f}ms")
+                return res
+            except Exception as e:
+                _log.warning(f"[INDICATOR sentiment_call] {fn.__name__} ERROR {e} in {(time.perf_counter()-tcall)*1000:.1f}ms")
+                return {"_partial": True, "_reason": str(e)}
+        end = _now_ms(); start = end - (lookback_points * _interval_to_ms(period))
         taker = safeget(self.binance.futures_data_taker_long_short_ratio, symbol=symbol, period=period, limit=lookback_points, start_time=start, end_time=end)
         glob  = safeget(self.binance.futures_data_global_long_short_account_ratio, symbol=symbol, period=period, limit=lookback_points, start_time=start, end_time=end)
         top_a = safeget(self.binance.futures_data_top_long_short_account_ratio, symbol=symbol, period=period, limit=lookback_points, start_time=start, end_time=end)
@@ -981,7 +1024,7 @@ class MarketIntel:
             if not isinstance(arr, list) or not arr: return None
             v = arr[-1].get(field) or arr[-1].get("buySellRatio")
             return _safe_float(v)
-        return {
+        out = {
             "taker_buy_sell_ratio": last_ratio(taker, "buySellRatio"),
             "global_long_short_ratio": last_ratio(glob, "longShortRatio"),
             "top_trader_accounts_ratio": last_ratio(top_a, "longShortRatio"),
@@ -991,53 +1034,77 @@ class MarketIntel:
                        "top_accounts": len(top_a) if isinstance(top_a, list) else 0,
                        "top_positions": len(top_p) if isinstance(top_p, list) else 0}
         }
+        _log.info(f"[INDICATOR sentiment_ratios_block] done in {(time.perf_counter()-t0)*1000:.1f}ms")
+        return out
 
     def market_breadth_spot_usdt(self, top_n_by_quote_vol: int = 50) -> Dict[str, Any]:
-        arr = self.binance.spot_ticker_24hr_all()
-        usdt = [r for r in arr if isinstance(r, dict) and str(r.get("symbol", "")).endswith("USDT")]
-        usdt.sort(key=lambda x: _safe_float(x.get("quoteVolume"), 0.0), reverse=True)
-        top = usdt[:top_n_by_quote_vol]
-        up = sum(1 for r in top if _safe_float(r.get("priceChangePercent")) > 0)
-        down = sum(1 for r in top if _safe_float(r.get("priceChangePercent")) < 0)
-        flat = len(top) - up - down
-        return {"universe": len(usdt), "considered": len(top), "up": up, "down": down, "flat": flat, "advance_decline": up - down}
+        t0 = time.perf_counter()
+        try:
+            arr = self.binance.spot_ticker_24hr_all()
+            usdt = [r for r in arr if isinstance(r, dict) and str(r.get("symbol", "")).endswith("USDT")]
+            usdt.sort(key=lambda x: _safe_float(x.get("quoteVolume"), 0.0), reverse=True)
+            top = usdt[:top_n_by_quote_vol]
+            up = sum(1 for r in top if _safe_float(r.get("priceChangePercent")) > 0)
+            down = sum(1 for r in top if _safe_float(r.get("priceChangePercent")) < 0)
+            flat = len(top) - up - down
+            return {"universe": len(usdt), "considered": len(top), "up": up, "down": down, "flat": flat, "advance_decline": up - down}
+        finally:
+            _log.info(f"[INDICATOR market_breadth_spot_usdt] done in {(time.perf_counter()-t0)*1000:.1f}ms")
 
     def stablecoin_deviation(self, symbols: List[str] = ("USDCUSDT", "FDUSDUSDT", "USDPUSDT")) -> Dict[str, Any]:
+        t0 = time.perf_counter()
         out: Dict[str, Any] = {}
         for s in symbols:
+            t1 = time.perf_counter()
             try:
                 px = self.binance.spot_ticker_price(s); p = _safe_float(px.get("price"))
                 out[s] = {"last": p, "deviation_from_1": (p - 1.0) if math.isfinite(p) else float("nan")}
+                _log.info(f"[INDICATOR stablecoin_deviation] {s} took {(time.perf_counter()-t1)*1000:.1f}ms")
             except Exception as e:
+                _log.warning(f"[INDICATOR stablecoin_deviation] {s} ERROR {e} in {(time.perf_counter()-t1)*1000:.1f}ms")
                 out[s] = {"_partial": True, "_reason": str(e), "last": float("nan"), "deviation_from_1": float("nan")}
+        _log.info(f"[INDICATOR stablecoin_deviation] done in {(time.perf_counter()-t0)*1000:.1f}ms")
         return out
 
     def macro_weather_block(self) -> Dict[str, Any]:
+        t0 = time.perf_counter()
         def get_one(sym: str) -> Dict[str, Any]:
+            t1 = time.perf_counter()
             try:
                 q = self.stooq.quote_snapshot(sym)
+                dt = (time.perf_counter() - t1) * 1000
                 if not q or not q.get("valid"):
+                    _log.info(f"[INDICATOR macro_weather:{sym}] invalid in {dt:.1f}ms")
                     return {"symbol": sym.upper(), "ok": False}
                 intr = q.get("intraday_change_pct")
                 sense = "up" if (isinstance(intr, float) and intr > 0) else "down" if (isinstance(intr, float) and intr < 0) else "flat"
+                _log.info(f"[INDICATOR macro_weather:{sym}] ok in {dt:.1f}ms")
                 return {"symbol": q["symbol"], "date": q["date"], "time": q["time"],
                         "open": q["open"], "high": q["high"], "low": q["low"], "close": q["close"], "volume": q["volume"],
                         "intraday_change_pct": intr, "sense": sense, "ok": True}
             except Exception as e:
+                _log.warning(f"[INDICATOR macro_weather:{sym}] ERROR {e} in {(time.perf_counter()-t1)*1000:.1f}ms")
                 return {"symbol": sym.upper(), "ok": False, "_partial": True, "_reason": str(e)}
         es = get_one("ES.F"); nq = get_one("NQ.F"); dx = get_one("DX.F")
         if not dx.get("ok"): dx = get_one("USD_I")
         def lean(s: Optional[str]) -> int: return 1 if s == "up" else -1 if s == "down" else 0
-        return {"ES": es, "NQ": nq, "DXY": dx, "macro_lean_score": lean(es.get("sense")) + lean(nq.get("sense")) - lean(dx.get("sense"))}
+        out = {"ES": es, "NQ": nq, "DXY": dx, "macro_lean_score": lean(es.get("sense")) + lean(nq.get("sense")) - lean(dx.get("sense"))}
+        _log.info(f"[INDICATOR macro_weather_block] done in {(time.perf_counter()-t0)*1000:.1f}ms")
+        return out
 
     # ---- Компоновка ----
 
     def snapshot(self, symbol: str = "BTCUSDT", lookback_hours: float = 2.0, asof_utc: Optional[datetime] = None) -> Dict[str, Any]:
+        t0_all = time.perf_counter()
         if asof_utc is None:
             asof_utc = datetime.now(timezone.utc)
 
+        _log.info(f"[SNAPSHOT] start symbol={symbol} lookback_hours={lookback_hours}")
+
         # 1) Быстрый ценовой блок (нужен для orderbook mid)
+        t0_price = time.perf_counter()
         price = self.price_block(symbol, lookback_hours, interval="5m")
+        _log.info(f"[SNAPSHOT] price_block took {(time.perf_counter()-t0_price)*1000:.1f}ms")
 
         # 2) Параллельно остальное (независимые блоки)
         results: Dict[str, Any] = {}
@@ -1055,6 +1122,7 @@ class MarketIntel:
                 "macro":         ex.submit(self.macro_weather_block),
             }
             for name, fut in futs.items():
+                t_block = time.perf_counter()
                 try:
                     results[name] = fut.result()
                 except Exception as e:
@@ -1065,8 +1133,12 @@ class MarketIntel:
                                           "snapshot_time": None},
                                          {"basis_now": float("nan"), "basis_last_close": float("nan"),
                                           "basis_then_open": float("nan"), "basis_change_abs": float("nan"), "bars": 0, "_partial": True, "_reason": str(e)})
+                        _log.warning(f"[SNAPSHOT] {name} ERROR {e}")
                     else:
                         results[name] = {"_partial": True, "_reason": str(e)}
+                        _log.warning(f"[SNAPSHOT] {name} ERROR {e}")
+                finally:
+                    _log.info(f"[SNAPSHOT] block '{name}' took {(time.perf_counter()-t_block)*1000:.1f}ms")
 
         funding, basis = results.get("funding_basis") if isinstance(results.get("funding_basis"), tuple) else ({"rates": [], "avg_rate": float("nan"),
                                                                                                                 "last_funding_rate": float("nan"), "who_pays_now": None,
@@ -1102,6 +1174,9 @@ class MarketIntel:
                 hints.append("ES/NQ вверх и/или DXY вниз — внешний фон поддерживает рост крипто.")
             elif macro["macro_lean_score"] < 0:
                 hints.append("ES/NQ вниз и/или DXY вверх — внешний фон против роста крипто.")
+
+        total_ms = (time.perf_counter() - t0_all) * 1000
+        _log.info(f"[SNAPSHOT] finished in {total_ms:.1f}ms")
 
         return {
             "asof_utc": asof_utc.isoformat(),
