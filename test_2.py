@@ -4,6 +4,8 @@ from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 import talib
+import asyncio
+from metrics.news_metric import news_metric
 
 def plot_dataset(dataset: dict[int, dict[int, float]]) -> None:
     days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -42,28 +44,30 @@ dataset = {
     6: {}
 }
 
-def main() -> None:
-    data = ld.load_candles('../MARKET_DATA/_crypto_data/BTCUSDT/BTCUSDT_1h.csv', datetime(2020, 1, 1), datetime(2025, 6, 1))
+async def main() -> None:
+    result = await news_metric()
+    print(result)
+    # data = ld.load_candles('../MARKET_DATA/_crypto_data/BTCUSDT/BTCUSDT_1h.csv', datetime(2020, 1, 1), datetime(2025, 6, 1))
     
-    for i in range(54, len(data)):
-        now = data[i-1]
-        dt = datetime.fromtimestamp(now[0]/1000)
-        hour = dt.hour
-        weekday = dt.weekday()
+    # for i in range(54, len(data)):
+    #     now = data[i-1]
+    #     dt = datetime.fromtimestamp(now[0]/1000)
+    #     hour = dt.hour
+    #     weekday = dt.weekday()
         
-        diff = (now[2]-now[3])/now[1]
+    #     diff = (now[2]-now[3])/now[1]
 
 
-        if hour not in dataset[weekday]:
-            dataset[weekday][hour] = diff
-        else:
-            dataset[weekday][hour] += diff
+    #     if hour not in dataset[weekday]:
+    #         dataset[weekday][hour] = diff
+    #     else:
+    #         dataset[weekday][hour] += diff
     
-    print(dataset)
-    print(len(data))
-    plot_dataset(dataset)
+    # print(dataset)
+    # print(len(data))
+    # plot_dataset(dataset)
         
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

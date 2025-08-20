@@ -57,6 +57,7 @@ stages = {
         'rsi': 55.4,
         'position': {
             'second_stage_px': 113.440,
+            "fut_full_amt": 0.0053,
             'open_time': '',
             'exist': False,
             'pnl_target': 0,
@@ -99,6 +100,7 @@ stages = {
         'rsi': 55.4,
         'position': {
             'second_stage_px': 113.440,
+            "fut_full_amt": 0.0053,
             'open_time': '',
             'exist': False,
             'pnl_target': 0,
