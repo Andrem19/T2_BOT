@@ -23,6 +23,7 @@ from concurrent.futures import Future, TimeoutError as FutTimeoutError
 
 from metrics.indicators import MarketIntel
 from metrics.score import score_snapshot
+from metrics.news_metric import news_metric
 
 # ---------------------------- ЛОГИРОВАНИЕ ------------------------------------
 _logger = logging.getLogger("hourly_57_scheduler")
@@ -75,9 +76,9 @@ def _next_trigger_57(now: datetime) -> datetime:
     Ближайшее локальное время с минутой = 57 и секундами = 0.
     Если уже прошли :57 текущего часа — берём следующий час.
     """
-    target = now.replace(minute=53, second=0, microsecond=0)
+    target = now.replace(minute=12, second=0, microsecond=0)
     if now >= target:
-        target = (target + timedelta(hours=1)).replace(minute=53, second=0, microsecond=0)
+        target = (target + timedelta(hours=1)).replace(minute=12, second=0, microsecond=0)
     return target
 
 # ------------------------------ РЕАЛЬНЫЕ ЗАДАЧИ ------------------------------
@@ -287,6 +288,7 @@ class HourlyAt57Scheduler:
         try:
             _logger.info("Запуск hourly job run_id=%s на %s", run_id, started_local)
 
+            news_score = await news_metric()
             # 1) task_one (await)
             t1_res: Dict[str, Any] = await task_one()
 
@@ -295,6 +297,7 @@ class HourlyAt57Scheduler:
             
             payload: Dict[str, Any] = dict(t2_res) if isinstance(t2_res, dict) else {"result": t2_res}
             payload["time_utc"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+            payload["per_metric"]["news_score"] = news_score or {'score': 0}
 
             minify_dict = map_time_to_score([payload])
             pretty_str = tools.dict_to_pretty_string(minify_dict)

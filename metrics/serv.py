@@ -85,6 +85,7 @@ def map_time_to_score(items: List[Dict[str, Any]]) -> Dict[str, float]:
         # Извлекаем score
         try:
             score_raw = entry["overall"]["score"]
+            news_score = entry["per_metric"]["news_score"]["score"]
             score = float(score_raw)
         except (KeyError, TypeError, ValueError) as e:
             raise ValueError(f"Item #{idx}: missing or non-numeric overall.score") from e
@@ -105,7 +106,7 @@ def map_time_to_score(items: List[Dict[str, Any]]) -> Dict[str, float]:
 
         # Формат 'YY-MM-DD HH:MM:SS'
         key = dt.strftime("%y-%m-%d %H:%M:%S")
-        out[key] = score
+        out[key] = f'market: {score} | news: {news_score}'
 
     return out
 

@@ -44,7 +44,7 @@ CACHE_DIR = os.environ.get("INTEL_CACHE_DIR", ".intel_cache")
 CACHE_CLEAN_PROB = float(os.environ.get("INTEL_CACHE_CLEAN_PROB", "0.02"))  # 2% шанс чистить протухшее при каждом сохранении
 
 # Конкурентность сборки снапшота
-INTEL_CONCURRENCY = int(os.environ.get("INTEL_CONCURRENCY", "2"))
+INTEL_CONCURRENCY = int(os.environ.get("INTEL_CONCURRENCY", "1"))
 
 # Таймауты HTTP
 HTTP_CONNECT_TIMEOUT = float(os.environ.get("INTEL_HTTP_CONNECT_TIMEOUT", "5.0"))
