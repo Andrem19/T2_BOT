@@ -54,9 +54,8 @@ perc_tp = [0.02, 0.025, 0.03, 0.04]
 from metrics.market_watch import collect_news
 
 async def main() -> None:
-    mi = MarketIntel()
-    result = mi.snapshot(symbol="BTCUSDT", lookback_hours=2.0)
-    print(result)
+   result = HL.close_position_post_only('BTCUSDT', 2)
+   print(result)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,10 @@ async def close_position_fully(pos_name, reason, last_px):
         logger.exception(f'{e}')
     
     acc = 2 if pos_name =='first' else 1
+    
+    if reason != 'no_opt':
+        await close_option(acc, reason, pos_name)
+    
     symbol_fut = sv.stages[pos_name]['base_coin'] + 'USDT'
     HL.cancel_all_orders(symbol_fut, acc)
     if not 'no_fut' in reason:
@@ -27,9 +31,6 @@ async def close_position_fully(pos_name, reason, last_px):
         logger.info(f'in close_position_fully: fut_size: {fut_size}')
         if abs(fut_size) >= 1e-9:
             await close_futures(acc, symbol_fut, pos_name, fut_size)
-    
-    if reason != 'no_opt':
-        await close_option(acc, reason, pos_name)
     
     # обнулить состояние
     sv.stages[pos_name]['exist'] = False
@@ -49,21 +50,22 @@ async def close_futures(acc, symbol_fut, pos_name, fut_size):
     try:
         side_fx = "Buy" if fut_size > 0 else 'Sell'
         amt_base = abs(fut_size)
-        tx_sig, px_exec = HL.open_market_order(
-            coin=symbol_fut,
-            sd=side_fx,
-            amount_usdt=0.0,
-            reduce_only=True,
-            amount_coins=amt_base,
-            account_idx=acc
-        )
+        # tx_sig, px_exec = HL.open_market_order(
+        #     coin=symbol_fut,
+        #     sd=side_fx,
+        #     amount_usdt=0.0,
+        #     reduce_only=True,
+        #     amount_coins=amt_base,
+        #     account_idx=acc
+        # )
+        HL.close_position_post_only(symbol_fut, acc)
         await asyncio.sleep(1)
         
         logger.info(
-            "%s CLOSE FUT %s pos_name=%s qty=%s side=%s px_exec≈%s",
-            pos_name, symbol_fut, pos_name, amt_base, side_fx, px_exec,
+            "%s CLOSE FUT %s pos_name=%s qty=%s side=%s",
+            pos_name, symbol_fut, pos_name, amt_base, side_fx,
         )
-        return {"tx_sig": tx_sig, "px": px_exec}
+        return True
     except Exception as e:  # noqa: BLE001
         logger.exception("%s ERROR close_futures %s: %s", pos_name, symbol_fut, e)
         return None

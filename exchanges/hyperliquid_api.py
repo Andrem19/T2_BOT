@@ -907,3 +907,342 @@ class HL:
             is_buy_close = True
 
         return HL._post_position_tpsl(coin, is_buy_close, px, trig, "tp", account_idx)
+
+    @staticmethod
+    @retry(Exception, tries=MAXIMUM_NUMBER_OF_API_CALL_TRIES, delay=2)
+    def close_position_post_only(
+        coin: str,
+        account_idx: int = 1,
+        offset_bps: float = 2.0,            # целевой отступ в б.п. от рынка
+        reprice_interval_sec: int = 15,     # как часто подтягиваться к топу книги
+        reprice_threshold_bps: float = 0.5, # когда считать, что рынок «ушёл»
+        min_offset_ticks: int = 1,          # гарантия не пересечь лучшую сторону
+    ) -> Optional[dict]:
+        """
+        Закрыть позицию как мейкер (post-only). Если UPNL отрицательный — закрыть по рынку.
+        Иначе — постинг post-only лимитника и поддержание у топа книги до полного закрытия.
+
+        Возвращает итоговое состояние позиции по инструменту (как HL.get_position),
+        т.е. обычно None (позиция закрыта). Не имеет лимита попыток.
+        """
+        cl   = HL._get_client(account_idx)
+        name = coin[:-4]
+
+        # ------- состояние позиции -------
+        pos = HL.get_position(coin, account_idx)
+        if not pos or abs(float(pos.get("size", 0.0))) <= 0.0:
+            sv.logger.info("[close_post_only:%s] no position found", coin)
+            return None
+
+        sz  = abs(float(pos["size"]))
+        pnl = float(pos.get("unrealizedPnl", 0.0))
+        sd_close = "Sell" if pos["size"] > 0 else "Buy"
+        is_buy_close = (sd_close == "Buy")
+        sv.logger.info(
+            "[close_post_only:%s] start: size=%.10f side_close=%s upnl=%.6f",
+            coin, sz, sd_close, pnl
+        )
+
+        # ------- если UPNL < 0 — закрываем по рынку -------
+        if pnl < 0:
+            sv.logger.warning("[close_post_only:%s] UPNL negative -> market close", coin)
+            try:
+                HL.open_market_order(
+                    coin=coin,
+                    sd=sd_close,
+                    amount_usdt=0,
+                    reduce_only=True,
+                    amount_coins=sz,
+                    account_idx=account_idx,
+                )
+            except Exception:
+                sv.logger.exception("[close_post_only:%s] market close failed", coin)
+                raise
+            time.sleep(0.2)
+            return HL.get_position(coin, account_idx)
+
+        # ------- meta/decimals -------
+        try:
+            meta   = HL.instrument_info(coin, account_idx)
+            sz_dec = int(meta["szDecimals"])
+            px_dec = max(0, 6 - sz_dec)  # правило точности цены у HL перпов
+        except Exception:
+            sv.logger.exception("[close_post_only:%s] failed to fetch meta", coin)
+            raise
+
+        # ------- вспомогательные -------
+        def _round_floor(x: float, dec: int) -> float:
+            if dec <= 0:
+                return float(int(x))
+            s = 10.0 ** dec
+            return float(int(x * s)) / s
+
+        def _round_ceil(x: float, dec: int) -> float:
+            if dec <= 0:
+                v = int(x)
+                return float(v if x == v else v + 1)
+            s = 10.0 ** dec
+            v = x * s
+            iv = int(v)
+            return float(iv if v == iv else iv + 1) / s
+
+        def _book_best_and_tick() -> tuple[float, float, float, float]:
+            """Возвращает (best_bid, best_ask, tick, mid). Надёжен к пустому снапшоту."""
+            mid = float(cl["info"].all_mids()[name])
+            book = cl["info"].l2_snapshot(name)
+            levels = book.get("levels", [])
+            # дефолтный тик из точности цены
+            default_tick = 10.0 ** (-px_dec)
+
+            if not levels or len(levels) < 2:
+                return mid - default_tick, mid + default_tick, default_tick, mid
+
+            side0 = [float(x["px"]) for x in levels[0] if "px" in x]
+            side1 = [float(x["px"]) for x in levels[1] if "px" in x]
+            if not side0 or not side1:
+                return mid - default_tick, mid + default_tick, default_tick, mid
+
+            def min_diff(prs):
+                prs = sorted(set(prs))
+                diffs = [prs[i+1]-prs[i] for i in range(len(prs)-1)]
+                diffs = [d for d in diffs if d > 0]
+                return min(diffs) if diffs else 0.0
+
+            # грубая классификация сторон вокруг mid
+            s0_min, s0_max = min(side0), max(side0)
+            s1_min, s1_max = min(side1), max(side1)
+            def classify(prices):
+                mn, mx = min(prices), max(prices)
+                if mx <= mid: return "bid"
+                if mn >= mid: return "ask"
+                avg = sum(prices) / len(prices)
+                return "bid" if avg < mid else "ask"
+
+            c0, c1 = classify(side0), classify(side1)
+            if c0 == c1:
+                bid_side = side0 if (s0_max <= s1_min) else side1
+                ask_side = side1 if bid_side is side0 else side0
+            else:
+                bid_side = side0 if c0 == "bid" else side1
+                ask_side = side1 if c1 == "ask" else side0
+
+            best_bid = max(bid_side)
+            best_ask = min(ask_side)
+            tick_candidates = [min_diff(bid_side), min_diff(ask_side), default_tick]
+            tick = min([t for t in tick_candidates if t > 0]) if any(t > 0 for t in tick_candidates) else default_tick
+            return best_bid, best_ask, tick, mid
+
+        def _target_px(best_bid: float, best_ask: float, tick: float, want_buy: bool, mkt_px: float) -> float:
+            # базовая цель — отступ от "рынка" (mid) на offset_bps
+            base = mkt_px
+            off = base * (offset_bps / 1e4)
+            raw = (base - off) if want_buy else (base + off)
+
+            if want_buy:
+                # закрываем шорт покупкой — стоим на бидах, не пересекаем аск
+                lim = best_ask - max(min_offset_ticks, 1) * tick
+                raw = min(raw, lim)      # не выше почти ask
+                raw = max(raw, best_bid) # но не глубже, чем bid
+                px = _round_floor(raw, px_dec)
+                if px >= best_ask:
+                    px = _round_floor(best_ask - tick, px_dec)
+            else:
+                # закрываем лонг продажей — стоим на асках, не пересекаем бид
+                lim = best_bid + max(min_offset_ticks, 1) * tick
+                raw = max(raw, lim)      # не ниже почти bid
+                raw = min(raw, best_ask) # но не выше топа ask
+                px = _round_ceil(raw, px_dec)
+                if px <= best_bid:
+                    px = _round_ceil(best_bid + tick, px_dec)
+            return px
+
+        # ------- актуальный размер к закрытию с округлением -------
+        def _remaining_size_dec() -> float:
+            p = HL.get_position(coin, account_idx)
+            if not p:
+                return 0.0
+            return round(abs(float(p["size"])), sz_dec)
+
+        # В начале на всякий случай уберём чужие активные лимитки по этому инструменту
+        try:
+            HL.cancel_all_orders(coin, account_idx)
+        except Exception:
+            sv.logger.exception("[close_post_only:%s] cancel_all_orders failed (ignored)", coin)
+
+        # ------- первичная постановка ALO -------
+        oid = None
+        last_mid = None
+        while True:
+            # если позицию уже закрыли между попытками — выходим
+            rem = _remaining_size_dec()
+            if rem <= 0.0:
+                sv.logger.info("[close_post_only:%s] position already flat", coin)
+                return HL.get_position(coin, account_idx)
+
+            try:
+                best_bid, best_ask, tick, mid = _book_best_and_tick()
+                last_mid = mid
+                px = _target_px(best_bid, best_ask, tick, is_buy_close, mid)
+                sv.logger.info(
+                    "[close_post_only:%s] place ALO close: side=%s size=%.*f px=%.*f (bb=%.12f ba=%.12f tick=%.*f)",
+                    coin, sd_close, sz_dec, rem, px_dec, px, best_bid, best_ask, px_dec, tick
+                )
+                order = cl["exchange"].order(
+                    name,
+                    is_buy_close,
+                    rem,
+                    px,
+                    {"limit": {"tif": "Alo"}},
+                    reduce_only=True,
+                )
+            except Exception:
+                sv.logger.exception("[close_post_only:%s] initial ALO failed, retrying…", coin)
+                time.sleep(1)
+                continue
+
+            try:
+                st = order["response"]["data"]["statuses"][0]
+            except Exception:
+                st = {}
+                sv.logger.warning("[close_post_only:%s] unexpected order response, retry place", coin)
+
+            if "filled" in st:
+                sv.logger.info("[close_post_only:%s] immediately filled", coin)
+                time.sleep(0.2)
+                return HL.get_position(coin, account_idx)
+
+            if "resting" in st:
+                oid = st["resting"]["oid"]
+                break
+
+            # ALO отклонён — попробуем безопаснее (увеличим запас на 2 тика) и ещё раз
+            try:
+                best_bid, best_ask, tick, mid = _book_best_and_tick()
+                last_mid = mid
+                px2 = _target_px(best_bid, best_ask, tick * 2, is_buy_close, mid)
+                sv.logger.info(
+                    "[close_post_only:%s] ALO rejected -> retry: px2=%.*f (bb=%.12f ba=%.12f tick*2=%.*f)",
+                    coin, px_dec, px2, best_bid, best_ask, px_dec, tick * 2
+                )
+                order2 = cl["exchange"].order(
+                    name,
+                    is_buy_close,
+                    rem,
+                    px2,
+                    {"limit": {"tif": "Alo"}},
+                    reduce_only=True,
+                )
+                st2 = order2["response"]["data"]["statuses"][0]
+                if "filled" in st2:
+                    sv.logger.info("[close_post_only:%s] second attempt filled", coin)
+                    time.sleep(0.2)
+                    return HL.get_position(coin, account_idx)
+                if "resting" in st2:
+                    oid = st2["resting"]["oid"]
+                    break
+            except Exception:
+                sv.logger.exception("[close_post_only:%s] retry ALO failed, will loop", coin)
+                time.sleep(1)
+
+        # ------- мониторинг и перестановка до полного закрытия -------
+        sv.logger.info(
+            "[close_post_only:%s] monitoring started: reprice_interval=%ss threshold_bps=%.4f",
+            coin, reprice_interval_sec, reprice_threshold_bps
+        )
+        last_check = time.time()
+        while True:
+            # позиция уже закрыта?
+            rem = _remaining_size_dec()
+            if rem <= 0.0:
+                sv.logger.info("[close_post_only:%s] closed successfully", coin)
+                return HL.get_position(coin, account_idx)
+
+            # наш ордер всё ещё открыт?
+            try:
+                open_ords = HL.get_open_orders(account_idx)
+            except Exception:
+                sv.logger.exception("[close_post_only:%s] get_open_orders failed", coin)
+                open_ords = []
+
+            still_open = any(o.get("oid") == oid for o in open_ords)
+            if not still_open:
+                # либо полностью исполнилось (и позиция уже ~0), либо биржа перевыдала oid
+                sv.logger.info("[close_post_only:%s] oid=%s not in open list; will re-place if still not flat", coin, oid)
+                if _remaining_size_dec() <= 0.0:
+                    return HL.get_position(coin, account_idx)
+                # перевыставим ALO заново на остаток
+                oid = None
+                try:
+                    best_bid, best_ask, tick, mid = _book_best_and_tick()
+                    last_mid = mid
+                    px = _target_px(best_bid, best_ask, tick, is_buy_close, mid)
+                    order = cl["exchange"].order(
+                        name,
+                        is_buy_close,
+                        rem,
+                        px,
+                        {"limit": {"tif": "Alo"}},
+                        reduce_only=True,
+                    )
+                    st = order["response"]["data"]["statuses"][0]
+                    if "filled" in st:
+                        time.sleep(0.2)
+                        return HL.get_position(coin, account_idx)
+                    if "resting" in st:
+                        oid = st["resting"]["oid"]
+                except Exception:
+                    sv.logger.exception("[close_post_only:%s] re-place ALO failed", coin)
+                time.sleep(1)
+                continue
+
+            # периодическая подтяжка цены
+            now = time.time()
+            if now - last_check >= reprice_interval_sec:
+                last_check = now
+                try:
+                    best_bid, best_ask, tick, mid = _book_best_and_tick()
+                except Exception:
+                    sv.logger.exception("[close_post_only:%s] book fetch failed in monitor", coin)
+                    time.sleep(1)
+                    continue
+
+                moved = False
+                if last_mid is not None:
+                    thr = (reprice_threshold_bps / 1e4) * (mid if mid else 1.0)
+                    moved = abs(mid - last_mid) >= thr
+
+                if moved:
+                    last_mid = mid
+                    new_sz = _remaining_size_dec()
+                    if new_sz <= 0.0:
+                        sv.logger.info("[close_post_only:%s] closed during monitor", coin)
+                        return HL.get_position(coin, account_idx)
+
+                    new_px = _target_px(best_bid, best_ask, tick, is_buy_close, mid)
+                    sv.logger.info(
+                        "[close_post_only:%s] modify_order: oid=%s side=%s new_sz=%.*f new_px=%.*f "
+                        "(bb=%.12f ba=%.12f tick=%.*f, ALO)",
+                        coin, oid, sd_close, sz_dec, new_sz, px_dec, new_px, best_bid, best_ask, px_dec, tick
+                    )
+                    try:
+                        res = cl["exchange"].modify_order(
+                            oid,
+                            name,
+                            is_buy_close,
+                            new_sz,
+                            new_px,
+                            {"limit": {"tif": "Alo"}},
+                            reduce_only=True,
+                        )
+                        if res and res.get("status") == "ok":
+                            st = res["response"]["data"]["statuses"][0]
+                            if "filled" in st:
+                                sv.logger.info("[close_post_only:%s] modify -> filled", coin)
+                                time.sleep(0.2)
+                                return HL.get_position(coin, account_idx)
+                            if "resting" in st:
+                                oid = st["resting"]["oid"]
+                    except Exception:
+                        sv.logger.exception("[close_post_only:%s] modify_order failed", coin)
+
+            time.sleep(1)
