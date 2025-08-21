@@ -118,7 +118,7 @@ async def news_metric():
 
         user_prompt = f'''Your task is to analyze the list of these news items. 
         Each news item should be assigned a weight on a seven-point scale from 1 to 7 depending on how important it is for the next few hours 2-5 hours in terms of its impact on the cryptocurrency market. 
-        Also look at how long ago it was released. Today is now {dt_now}. After that, analyze each news item, is it positive for BTC growth or negative, and sum up all the points, plus if positive, minus if negative, and finally give me the final assessment in the format json "score": val '''
+        Also look at how long ago it was released. Today is now {dt_now}. After that, analyze each news item, is it positive for BTC growth or negative, and sum up all the points, plus if positive, minus if negative, do not take into account small and insignificant news at all and concentrate on those that can move the market. And finally give me the final assessment in the format json "score": val '''
 
         def _call_reasoner(model_name: str):
             return client_ds.chat.completions.create(
