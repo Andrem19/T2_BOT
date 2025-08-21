@@ -1067,30 +1067,258 @@ class MarketIntel:
         return out
 
     def macro_weather_block(self) -> Dict[str, Any]:
+        """
+        Надёжный макро-блок (ES/NQ/DXY) с полным OHLCV.
+        Источники (по приоритету внутри дедлайна):
+        1) Yahoo Quote (батч: ES=F,NQ=F,DX=F,^GSPC,^NDX,^DXY) -> OHLCV + ts
+        2) Stooq (https + http) -> парсим CSV со всеми полями
+        3) Yahoo Chart (range=1d, interval=1m) -> агрегируем OHLCV и берём последний ts
+        4) last-good из дискового кэша (моментально, помечено _stale=True)
+        Дедлайн контролируется INTEL_MACRO_DEADLINE_MS (по умолчанию 4000 мс).
+        """
+        import math, time, logging, datetime as _dt
+        from concurrent.futures import ThreadPoolExecutor, wait
+
+        log = logging.getLogger("market_intel")
+        if os.environ.get("INTEL_DISABLE_MACRO", "0") == "1":
+            log.info("[INDICATOR macro_weather_block] disabled by INTEL_DISABLE_MACRO")
+            return {"ES":{"symbol":"ES.F","ok":False,"_partial":True,"_reason":"disabled","source":"disabled"},
+                    "NQ":{"symbol":"NQ.F","ok":False,"_partial":True,"_reason":"disabled","source":"disabled"},
+                    "DXY":{"symbol":"DX.F","ok":False,"_partial":True,"_reason":"disabled","source":"disabled"},
+                    "macro_lean_score":0}
+
         t0 = time.perf_counter()
-        def get_one(sym: str) -> Dict[str, Any]:
+        deadline_ms = int(os.environ.get("INTEL_MACRO_DEADLINE_MS", "4000"))
+        remaining = lambda: max(0.0, deadline_ms/1000.0 - (time.perf_counter()-t0))
+
+        # Таймауты/ретраи (короткие)
+        yh_ct = float(os.environ.get("INTEL_YH_CONNECT_TIMEOUT", "1.0"))
+        yh_rt = float(os.environ.get("INTEL_YH_READ_TIMEOUT", "2.0"))
+        yh_rr = int(os.environ.get("INTEL_YH_MAX_RETRIES", "0"))
+
+        st_ct = float(os.environ.get("INTEL_STOOQ_CONNECT_TIMEOUT", "0.8"))
+        st_rt = float(os.environ.get("INTEL_STOOQ_READ_TIMEOUT", "1.2"))
+        st_rr = int(os.environ.get("INTEL_STOOQ_MAX_RETRIES", "0"))
+
+        CACHE_KEY = "__macro_last_good_v3__"
+        last_good, last_expired = self.cache.get_with_meta(CACHE_KEY)
+
+        def use_last_good(reason: str):
+            if isinstance(last_good, dict):
+                log.warning(f"[macro_weather] using last_good (stale={last_expired}) because: {reason}")
+                out = dict(last_good); out["_stale"] = True
+                return out
+            return {"ES":{"symbol":"ES.F","ok":False,"_partial":True,"_reason":reason,"source":"none"},
+                    "NQ":{"symbol":"NQ.F","ok":False,"_partial":True,"_reason":reason,"source":"none"},
+                    "DXY":{"symbol":"DX.F","ok":False,"_partial":True,"_reason":reason,"source":"none"},
+                    "macro_lean_score":0, "_stale": True}
+
+        def sense_from_intraday(x: float) -> str:
+            if not isinstance(x, float) or not math.isfinite(x) or x == 0.0: return "flat"
+            return "up" if x > 0 else "down"
+
+        def finalize(es, nq, dx):
+            def lean(s: str) -> int: return 1 if s == "up" else -1 if s == "down" else 0
+            return {"ES": es, "NQ": nq, "DXY": dx,
+                    "macro_lean_score": lean(es.get("sense")) + lean(nq.get("sense")) - lean(dx.get("sense"))}
+
+        def pack(symbol_canon: str, src: str, source_symbol: str,
+                o: float, h: float, l: float, c: float, v: float,
+                ts: int | None = None, date_str: str | None = None, time_str: str | None = None) -> Dict[str, Any]:
+            intr = ((c - o)/o) if (math.isfinite(o) and math.isfinite(c) and o != 0.0) else float("nan")
+            if ts is not None and (date_str is None or time_str is None):
+                try:
+                    dt = _dt.datetime.utcfromtimestamp(ts).replace(tzinfo=_dt.timezone.utc)
+                    date_str = dt.strftime("%Y-%m-%d"); time_str = dt.strftime("%H:%M:%S UTC")
+                except Exception:
+                    pass
+            return {"symbol": symbol_canon, "date": date_str, "time": time_str,
+                    "open": o, "high": h, "low": l, "close": c, "volume": v,
+                    "intraday_change_pct": intr, "sense": sense_from_intraday(intr),
+                    "ok": (math.isfinite(o) and math.isfinite(c)), "source": src, "source_symbol": source_symbol}
+
+        # ---------- 1) Yahoo Quote батч: OHLCV + ts ----------
+        es = {"symbol":"ES.F","ok":False,"_partial":True,"source":"none"}
+        nq = {"symbol":"NQ.F","ok":False,"_partial":True,"source":"none"}
+        dx = {"symbol":"DX.F","ok":False,"_partial":True,"source":"none"}
+
+        try:
+            if remaining() <= 0: raise TimeoutError("deadline_before_yahoo_quote")
+            yh = Http("https://query1.finance.yahoo.com", self.cache)
+            yh.timeout_connect, yh.timeout_read, yh.max_retries = yh_ct, yh_rt, yh_rr
+            y_symbols = ["ES=F","NQ=F","DX=F","^GSPC","^NDX","^DXY"]
             t1 = time.perf_counter()
+            data = yh.get("/v7/finance/quote", {"symbols": ",".join(y_symbols)})
+            dur = (time.perf_counter()-t1)*1000
+            rows = (data or {}).get("quoteResponse", {}).get("result", []) if isinstance(data, dict) else []
+            idx = {r.get("symbol"): r for r in rows if isinstance(r, dict)}
+
+            def take_from(symbols: list[str], canon: str):
+                for s in symbols:
+                    r = idx.get(s)
+                    if not r: continue
+                    o = _safe_float(r.get("regularMarketOpen"))
+                    h = _safe_float(r.get("regularMarketDayHigh"))
+                    l = _safe_float(r.get("regularMarketDayLow"))
+                    c = _safe_float(r.get("regularMarketPrice"))
+                    v = _safe_float(r.get("regularMarketVolume"))
+                    ts = int(r.get("regularMarketTime") or 0) if r.get("regularMarketTime") else None
+                    if math.isfinite(c) and (math.isfinite(o) or math.isfinite(h) or math.isfinite(l)):
+                        return pack(canon, "yahoo_quote", s, o, h, l, c, v, ts)
+                return None
+
+            es_try = take_from(["ES=F","^GSPC"], "ES.F")
+            nq_try = take_from(["NQ=F","^NDX"],  "NQ.F")
+            dx_try = take_from(["DX=F","^DXY"],  "DX.F")
+            if es_try: es = es_try
+            if nq_try: nq = nq_try
+            if dx_try: dx = dx_try
+            log.info(f"[macro_weather:yahoo_quote] filled={sum(x.get('ok',False) for x in (es,nq,dx))}/3 in {dur:.1f}ms")
+        except Exception as e:
+            log.warning(f"[macro_weather:yahoo_quote] error: {e}")
+
+        if es.get("ok") and nq.get("ok") and dx.get("ok"):
+            out = finalize(es, nq, dx)
+            self.cache.set(CACHE_KEY, out, 3600, "json")
+            log.info(f"[macro_weather_block] done in {(time.perf_counter()-t0)*1000:.1f}ms (yahoo_quote all)")
+            return out
+
+        # ---------- 2) Stooq (https + http) — полный парс CSV ----------
+        def stooq_one(sym_csv: str, base_url: str) -> Dict[str, Any]:
+            h = Http(base_url, self.cache)
+            h.timeout_connect, h.timeout_read, h.max_retries = st_ct, st_rt, st_rr
             try:
-                q = self.stooq.quote_snapshot(sym)
-                dt = (time.perf_counter() - t1) * 1000
-                if not q or not q.get("valid"):
-                    _log.info(f"[INDICATOR macro_weather:{sym}] invalid in {dt:.1f}ms")
-                    return {"symbol": sym.upper(), "ok": False}
-                intr = q.get("intraday_change_pct")
-                sense = "up" if (isinstance(intr, float) and intr > 0) else "down" if (isinstance(intr, float) and intr < 0) else "flat"
-                _log.info(f"[INDICATOR macro_weather:{sym}] ok in {dt:.1f}ms")
-                return {"symbol": q["symbol"], "date": q["date"], "time": q["time"],
-                        "open": q["open"], "high": q["high"], "low": q["low"], "close": q["close"], "volume": q["volume"],
-                        "intraday_change_pct": intr, "sense": sense, "ok": True}
+                t1 = time.perf_counter()
+                txt = h.get("/q/l/", {"s": sym_csv.lower(), "f": "sd2t2ohlcv", "h": "", "e": "csv"})
+                ms = (time.perf_counter()-t1)*1000
+                if not isinstance(txt, str) or not txt.strip():
+                    raise RuntimeError("empty")
+                lines = [ln.strip() for ln in txt.strip().splitlines() if ln.strip()]
+                if len(lines) < 2:
+                    raise RuntimeError("no_rows")
+                header = [x.strip().lower() for x in lines[0].split(",")]
+                row = [x.strip() for x in lines[1].split(",")]
+                def col(name: str):
+                    try:
+                        i = header.index(name); return row[i] if i < len(row) else None
+                    except ValueError:
+                        return None
+                o = _safe_float(col("open")); h_ = _safe_float(col("high")); l_ = _safe_float(col("low"))
+                c = _safe_float(col("close")); v = _safe_float(col("volume"))
+                d = (col("date") or None); t_ = (col("time") or None)
+                src = "stooq_http" if base_url.startswith("http://") else "stooq_https"
+                canon = "ES.F" if sym_csv.upper().startswith("ES") else "NQ.F" if sym_csv.upper().startswith("NQ") else "DX.F"
+                out = pack(canon, src, sym_csv.upper(), o, h_, l_, c, v, ts=None, date_str=d, time_str=t_)
+                log.info(f"[macro_weather:{sym_csv}] {src} ok in {ms:.1f}ms")
+                return out
             except Exception as e:
-                _log.warning(f"[INDICATOR macro_weather:{sym}] ERROR {e} in {(time.perf_counter()-t1)*1000:.1f}ms")
-                return {"symbol": sym.upper(), "ok": False, "_partial": True, "_reason": str(e)}
-        es = get_one("ES.F"); nq = get_one("NQ.F"); dx = get_one("DX.F")
-        if not dx.get("ok"): dx = get_one("USD_I")
-        def lean(s: Optional[str]) -> int: return 1 if s == "up" else -1 if s == "down" else 0
-        out = {"ES": es, "NQ": nq, "DXY": dx, "macro_lean_score": lean(es.get("sense")) + lean(nq.get("sense")) - lean(dx.get("sense"))}
-        _log.info(f"[INDICATOR macro_weather_block] done in {(time.perf_counter()-t0)*1000:.1f}ms")
+                return {"symbol": ("ES.F" if sym_csv.upper().startswith("ES") else "NQ.F" if sym_csv.upper().startswith("NQ") else "DX.F"),
+                        "ok": False, "_partial": True, "_reason": str(e), "source": "stooq", "source_symbol": sym_csv.upper()}
+
+        to_fetch = []
+        if not es.get("ok"): to_fetch += [("ES.F","ES.F")]
+        if not nq.get("ok"): to_fetch += [("NQ.F","NQ.F")]
+        if not dx.get("ok"): to_fetch += [("DX.F","DX.F")]
+
+        if to_fetch and remaining() > 0:
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                futs = []
+                for canon, sym in to_fetch:
+                    futs.append(ex.submit(stooq_one, sym, "https://stooq.com"))
+                    futs.append(ex.submit(stooq_one, sym, "http://stooq.com"))  # обход TLS-заиканий
+                done, _ = wait(futs, timeout=min(remaining(), 1.6))
+                for fut in done:
+                    try:
+                        r = fut.result()
+                        if r.get("ok"):
+                            if r["symbol"] == "ES.F" and not es.get("ok"): es = r
+                            if r["symbol"] == "NQ.F" and not nq.get("ok"): nq = r
+                            if r["symbol"] == "DX.F" and not dx.get("ok"): dx = r
+                    except Exception as e:
+                        log.warning(f"[macro_weather:stooq_future] err: {e}")
+
+        if es.get("ok") and nq.get("ok") and dx.get("ok"):
+            out = finalize(es, nq, dx)
+            self.cache.set(CACHE_KEY, out, 3600, "json")
+            log.info(f"[macro_weather_block] done in {(time.perf_counter()-t0)*1000:.1f}ms (stooq filled)")
+            return out
+
+        # ---------- 3) Yahoo Chart: агрегируем дневной OHLCV ----------
+        def yahoo_chart_ohlcv(ticker: str, canon: str) -> Dict[str, Any] | None:
+            try:
+                if remaining() <= 0: return None
+                yh = Http("https://query1.finance.yahoo.com", self.cache)
+                yh.timeout_connect, yh.timeout_read, yh.max_retries = yh_ct, yh_rt, yh_rr
+                t1 = time.perf_counter()
+                js = yh.get("/v8/finance/chart/"+ticker, {"range":"1d", "interval":"1m"})
+                ms = (time.perf_counter()-t1)*1000
+                res = (js or {}).get("chart", {}).get("result", [])
+                if not res: return None
+                d = res[0]
+                ts = d.get("timestamp") or []
+                q = (d.get("indicators", {}).get("quote") or [{}])[0]
+                oo, hh, ll, cc, vv = (q.get("open") or []), (q.get("high") or []), (q.get("low") or []), (q.get("close") or []), (q.get("volume") or [])
+                # первый валидный open, мин/макс, последний валидный close, сумма volume
+                def first_valid(a): 
+                    for x in a:
+                        try:
+                            fx = float(x)
+                            if math.isfinite(fx): return fx
+                        except Exception: pass
+                    return float("nan")
+                def last_valid(a):
+                    for x in reversed(a):
+                        try:
+                            fx = float(x)
+                            if math.isfinite(fx): return fx
+                        except Exception: pass
+                    return float("nan")
+                def min_valid(a):
+                    vals = [float(x) for x in a if isinstance(x,(int,float)) and math.isfinite(float(x))]
+                    return min(vals) if vals else float("nan")
+                def max_valid(a):
+                    vals = [float(x) for x in a if isinstance(x,(int,float)) and math.isfinite(float(x))]
+                    return max(vals) if vals else float("nan")
+                def sum_valid(a):
+                    s = 0.0; ok = False
+                    for x in a:
+                        try:
+                            fx = float(x)
+                            if math.isfinite(fx): s += fx; ok = True
+                        except Exception: pass
+                    return (s if ok else float("nan"))
+                o = first_valid(oo); h_ = max_valid(hh); l_ = min_valid(ll); c = last_valid(cc); v = sum_valid(vv)
+                ts_last = int(ts[-1]) if ts and isinstance(ts[-1], (int,float)) else None
+                out = pack(canon, "yahoo_chart", ticker, o, h_, l_, c, v, ts=ts_last)
+                log.info(f"[macro_weather:yahoo_chart] {ticker} -> {canon} in {ms:.1f}ms")
+                return out if out.get("ok") else None
+            except Exception:
+                return None
+
+        fill_plan = [("ES.F", ["ES=F","^GSPC"]), ("NQ.F", ["NQ=F","^NDX"]), ("DX.F", ["DX=F","^DXY"])]
+        for canon, tickers in fill_plan:
+            if canon == "ES.F" and es.get("ok"): continue
+            if canon == "NQ.F" and nq.get("ok"): continue
+            if canon == "DX.F" and dx.get("ok"): continue
+            for tkr in tickers:
+                r = yahoo_chart_ohlcv(tkr, canon)
+                if r:
+                    if canon=="ES.F": es = r
+                    if canon=="NQ.F": nq = r
+                    if canon=="DX.F": dx = r
+                    break
+
+        # ---------- Финиш/кэш ----------
+        if not (es.get("ok") and nq.get("ok") and dx.get("ok")):
+            out = use_last_good("all_sources_failed_or_deadline")
+            log.info(f"[macro_weather_block] done in {(time.perf_counter()-t0)*1000:.1f}ms (last_good/stale)")
+            return out
+
+        out = finalize(es, nq, dx)
+        self.cache.set(CACHE_KEY, out, 3600, "json")
+        log.info(f"[macro_weather_block] done in {(time.perf_counter()-t0)*1000:.1f}ms (ES={es.get('source')}, NQ={nq.get('source')}, DXY={dx.get('source')})")
         return out
+
 
     # ---- Компоновка ----
 
