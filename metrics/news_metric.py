@@ -23,7 +23,7 @@ async def news_metric():
         # ------------------- Конфигурация/клиенты -------------------
         api_deepseek = config('DEEPSEEK_API', default='')
         api_openai   = config('OPENAI_API',   default='')
-        print(api_openai)
+
         if not api_deepseek:
             raise RuntimeError("DEEPSEEK_API not configured")
 
@@ -155,7 +155,7 @@ async def news_metric():
             for attempt in (1, 2):
                 try:
                     # выполняем блокирующий SDK-вызов в отдельном потоке с таймаутом 120с
-                    return await asyncio.wait_for(asyncio.to_thread(callable_fn), timeout=60.0)
+                    return await asyncio.wait_for(asyncio.to_thread(callable_fn), timeout=180.0)
                 except asyncio.TimeoutError:
                     sv.logger.warning("%s timed out after 60s (attempt %d/2)", label, attempt)
                     if attempt == 2:

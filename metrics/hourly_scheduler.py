@@ -288,7 +288,6 @@ class HourlyAt57Scheduler:
         try:
             _logger.info("Запуск hourly job run_id=%s на %s", run_id, started_local)
 
-            dt = datetime.now(timezone.utc)
             news_score = await news_metric()
             # 1) task_one (await)
             t1_res: Dict[str, Any] = await task_one()
