@@ -21,6 +21,7 @@ from metrics.hourly_scheduler import start_hourly_57_scheduler
 from openai import OpenAI
 from decouple import config
 import json
+from metrics.serv import get_rr25_iv
 import re
 from metrics.indicators import MarketIntel
 
@@ -54,8 +55,10 @@ perc_tp = [0.02, 0.025, 0.03, 0.04]
 from metrics.market_watch import collect_news
 
 async def main() -> None:
-   result = HL.close_position_post_only('BTCUSDT', 2)
-   print(result)
+    BB.initialise()
+    rr25, opts = await get_rr25_iv()
+    print(rr25, opts)
+   
 
 
 if __name__ == "__main__":

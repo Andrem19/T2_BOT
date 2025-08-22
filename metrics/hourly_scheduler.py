@@ -12,7 +12,7 @@ import os
 import threading
 import time
 import uuid
-from metrics.serv import map_time_to_score
+from metrics.serv import map_time_to_score, get_rr25_iv
 import helpers.tools as tools
 import helpers.tlg as tel
 from dataclasses import dataclass
@@ -304,6 +304,7 @@ class HourlyAt57Scheduler:
             _logger.info("Запуск hourly job run_id=%s на %s", run_id, started_local)
 
             news_score = await news_metric()
+            rr25, iv = await get_rr25_iv()
             # 1) task_one (await)
             t1_res: Dict[str, Any] = await task_one()
 
@@ -315,6 +316,8 @@ class HourlyAt57Scheduler:
             new_d = str(_round_to_nearest_hour_utc(date))
             payload["time_utc"] = new_d
             payload["per_metric"]["news_score"] = news_score or {'score': 0}
+            payload["per_metric"]["rr25"] = rr25 or {'score': 0}
+            payload["per_metric"]["iv"] = iv or {'score': 0}
 
             minify_dict = map_time_to_score([payload])
             pretty_str = tools.dict_to_pretty_string(minify_dict)

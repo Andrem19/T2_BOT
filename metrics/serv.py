@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+import helpers.tools as tools
+from exchanges.bybit_option_hub import BybitOptionHub as BB
+from datetime import datetime, timezone
 from typing import Any, Dict, List
+from helpers.metrics import analyze_option_slice, pic_best_opt
 
 
 def read_last_metrics(n: int, path: str = "metrics.json", encoding: str = "utf-8") -> List[Dict[str, Any]]:
@@ -143,3 +146,24 @@ def extract_scores_by_time(entries: List[Dict[str, Any]]) -> Dict[str, Dict[str,
         result[formatted_time] = scores
 
     return result
+
+async def get_rr25_iv():
+    chain = BB.Chain.get_chain_full(underlying='BTC', days=2, with_greeks=True) or []
+    h = datetime.now(timezone.utc).hour
+    day_opt = 0 if h >= 0 and h < 6 else 1
+    opt_day_1, _ = tools.get_next_friday_day(day_opt)
+    filtered_chain_0 = []
+
+    filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
+    filtered_chain_0.extend(filtered_chain_calls)
+
+    filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
+    filtered_chain_0.extend(filtered_chain_puts)
+
+    left_to_exp = tools.time_to_expiry(filtered_chain_0[0]['deliveryTime'])
+    metrics = analyze_option_slice(filtered_chain_0)
+    rr25, opts = pic_best_opt(metrics)
+    iv = 0
+    if opts:
+        iv = opts[0]['iv']
+    return rr25, iv
