@@ -751,53 +751,103 @@ class HL:
         amount_coins: float = 0.0,
         reduce_only: bool = False,
         account_idx: int = 1,
-    ):
+    ) -> bool:
         """
         Простой постинг лимитной заявки с post-only (TIF="Alo") на указанной цене.
-        Без автопереноса, без дополнительных проверок и смены плеча.
         Возвращает:
-            oid ордера (если заявка resting/filled), иначе 0.
+            True  — если заявка была успешно размещена (resting) или мгновенно исполнена (filled),
+            False — если заявка не была размещена (ошибка/отклонение) или размер после округления равен 0.
+        Дополнительно: при статусе 'resting' выполняется короткая проверка через open_orders,
+        чтобы убедиться, что заявка действительно находится в книге.
         """
         cl   = HL._get_client(account_idx)
         name = coin[:-4]
         is_buy = (sd == "Buy")
 
         # --- метаданные и разрядности ---
-        meta   = HL.instrument_info(coin, account_idx)
-        sz_dec = int(meta["szDecimals"])
-        px_dec = max(0, 6 - sz_dec)  # для перпов правило точности цены
+        try:
+            meta   = HL.instrument_info(coin, account_idx)
+            sz_dec = int(meta["szDecimals"])
+            px_dec = max(0, 6 - sz_dec)  # для перпов правило точности цены
+        except Exception:
+            sv.logger.exception("[place_limit_post_only:%s] failed to read instrument meta", coin)
+            return False
 
         def _round_px(x: float) -> float:
             return float(f"{x:.{px_dec}f}") if px_dec > 0 else float(int(x))
 
         # --- размер ---
-        last = HL.get_last_price(coin, account_idx)
-        size = amount_coins or (amount_usdt / last)
-        size = round(float(size), sz_dec)
+        try:
+            last = HL.get_last_price(coin, account_idx)
+            size = amount_coins or (amount_usdt / last)
+            size = round(float(size), sz_dec)
+            if size <= 0:
+                sv.logger.warning("[place_limit_post_only:%s] size rounded to zero; abort", coin)
+                return False
+        except Exception:
+            sv.logger.exception("[place_limit_post_only:%s] failed to compute size/last px", coin)
+            return False
 
         # --- цена (как передана, лишь аккуратное округление под тик) ---
-        px = _round_px(float(limit_px))
+        try:
+            px = _round_px(float(limit_px))
+        except Exception:
+            sv.logger.exception("[place_limit_post_only:%s] invalid limit price", coin)
+            return False
 
         # --- отправка post-only ордера ---
-        order = cl["exchange"].order(
-            name,
-            is_buy,
-            size,
-            px,
-            {"limit": {"tif": "Alo"}},   # строго post-only
-            reduce_only=reduce_only,
-        )
+        try:
+            order = cl["exchange"].order(
+                name,
+                is_buy,
+                size,
+                px,
+                {"limit": {"tif": "Alo"}},   # строго post-only
+                reduce_only=reduce_only,
+            )
+        except Exception:
+            sv.logger.exception("[place_limit_post_only:%s] exchange.order failed", coin)
+            return False
 
-        # --- разбор ответа: возвращаем oid если есть ---
+        if not order or order.get("status") != "ok":
+            sv.logger.warning("[place_limit_post_only:%s] bad order response: %s", coin, order)
+            return False
+
+        # --- разбор ответа и верификация ---
         try:
             st = order["response"]["data"]["statuses"][0]
-            if "resting" in st:
-                return st["resting"]["oid"]
-            if "filled" in st:
-                return st["filled"]["oid"]
         except Exception:
-            pass
-        return 0
+            sv.logger.warning("[place_limit_post_only:%s] unexpected response shape", coin)
+            return False
+
+        # Если сразу исполнилось — считаем успешным размещением
+        if "filled" in st:
+            return True
+
+        # Если стоит в книге — проверим, что действительно отображается в open_orders
+        if "resting" in st:
+            oid = st["resting"].get("oid")
+            if not oid:
+                return False
+
+            # короткая верификация наличия в списке открытых заявок
+            for _ in range(3):
+                try:
+                    open_ords = HL.get_open_orders(account_idx)
+                    if any(o.get("oid") == oid for o in open_ords):
+                        return True
+                except Exception:
+                    sv.logger.exception("[place_limit_post_only:%s] get_open_orders failed", coin)
+                time.sleep(0.2)
+
+            # не нашли — считаем, что заявки нет
+            sv.logger.warning("[place_limit_post_only:%s] resting OID %s not found in open_orders", coin, oid)
+            return False
+
+        # Если пришёл error/нет нужных полей — неуспех
+        sv.logger.warning("[place_limit_post_only:%s] neither filled nor resting: %s", coin, st)
+        return False
+
 
 
     @staticmethod

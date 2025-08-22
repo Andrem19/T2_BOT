@@ -63,8 +63,10 @@ async def open_futures(position: dict, which_pos_we_need: str):
                 
                 add_price = entry_px * (1+need_dist) if side == 'Sell' else entry_px * (1-need_dist)
                 sv.stages[which_pos_we_need]['position']['second_stage_px'] = add_price
-                HL.place_limit_post_only(symbol, side, add_price, 0, second_stage_qty, False, acc)
-                logger.info(f"{which_pos_we_need} add position order is opened")
+                success = HL.place_limit_post_only(symbol, side, add_price, 0, second_stage_qty, False, acc)
+                logger.info(f"{which_pos_we_need} add position order is opened. Success: {success}")
+                if not success:
+                    await safe_send("TELEGRAM_API", f'place_limit_post_only() ADD POSITION is not placed', '', False)
             else:
                 sv.stages[which_pos_we_need]['position']['second_stage_px'] = 0
                 logger.info(f"{which_pos_we_need} quantity to small for add order {second_stage_qty} partial_pos is {sv.partial_pos}")

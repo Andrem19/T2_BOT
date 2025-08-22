@@ -55,9 +55,8 @@ perc_tp = [0.02, 0.025, 0.03, 0.04]
 from metrics.market_watch import collect_news
 
 async def main() -> None:
-    BB.initialise()
-    rr25, opts = await get_rr25_iv()
-    print(rr25, opts)
+    res = HL.place_limit_post_only('BTCUSDT', 'Sell', 116784, 0, 0.002, False, 2)
+    print(res)
    
 
 
