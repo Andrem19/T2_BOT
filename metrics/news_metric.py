@@ -211,19 +211,19 @@ async def news_metric():
             return final_data
 
         # Иначе — прогоняем как раньше (reasoner → openai → chat), но с таймаутами/повтором
-        try:
-            resp = await _call_with_timeout_twice(lambda: _call_reasoner("deepseek-reasoner"), "deepseek-reasoner")
-            if resp is not None:
-                choice = resp.choices[0] if resp.choices else None
-                raw = (getattr(choice.message, "content", None) or "").strip() if choice else ""
-                sv.logger.info("DeepSeek-reasoner finish_reason=%s", getattr(choice, "finish_reason", None) if choice else None)
-                parsed, raw_json = _parse_score(raw)
-                if parsed:
-                    used_model = "deepseek:deepseek-reasoner"
-                    final_data = parsed
-                    final_raw  = raw
-        except Exception as e:
-            sv.logger.warning("DeepSeek-reasoner error: %s", e)
+        # try:
+        #     resp = await _call_with_timeout_twice(lambda: _call_reasoner("deepseek-reasoner"), "deepseek-reasoner")
+        #     if resp is not None:
+        #         choice = resp.choices[0] if resp.choices else None
+        #         raw = (getattr(choice.message, "content", None) or "").strip() if choice else ""
+        #         sv.logger.info("DeepSeek-reasoner finish_reason=%s", getattr(choice, "finish_reason", None) if choice else None)
+        #         parsed, raw_json = _parse_score(raw)
+        #         if parsed:
+        #             used_model = "deepseek:deepseek-reasoner"
+        #             final_data = parsed
+        #             final_raw  = raw
+        # except Exception as e:
+        #     sv.logger.warning("DeepSeek-reasoner error: %s", e)
 
         if not final_data and client_oa:
             for mdl in openai_candidates:
