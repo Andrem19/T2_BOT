@@ -31,7 +31,7 @@ async def news_metric():
         client_oa = OpenAI(api_key=api_openai) if api_openai else None
 
         env_models = config('OPENAI_CANDIDATES', default='').strip()
-        openai_candidates = [m.strip() for m in env_models.split(',') if m.strip()] or ["gpt-4o", "gpt-4.1", "o3-mini"]
+        openai_candidates = [m.strip() for m in env_models.split(',') if m.strip()] or ["o4-mini", "gpt-4o", "gpt-4.1", "o3-mini"]
 
         # Файл кэша (полный перезапис при появлении хотя бы одной новой новости)
         CACHE_FILE = os.getenv("NEWS_MODEL_CACHE", ".news_model_cache.json")
