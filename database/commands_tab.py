@@ -30,7 +30,16 @@ class Commands(BaseModel):
     perc_wing_1: float = 0.001
     perc_wing_2: float = 0.001
     partial_pos: bool = True
+    force_take: bool = False
 
+
+    @classmethod
+    def set_force_take(cls, value: bool):
+        inst = cls.get_instance()
+        inst.force_take = value
+        inst.save()
+        return inst
+    
     @classmethod
     def set_partial_pos(cls, value: bool):
         inst = cls.get_instance()

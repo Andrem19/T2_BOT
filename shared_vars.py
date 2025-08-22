@@ -254,6 +254,7 @@ close_2 = False
 perc_wing_1 = 0.001
 perc_wing_2 = 0.001
 simulation = True
+force_take = False
 partial_pos = True
 opt_types = ['put', 'call']
 

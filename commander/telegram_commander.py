@@ -55,6 +55,13 @@ async def rem():
     except Exception as e:
         await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
 
+async def force(val: str):
+    try:
+        Commands.set_force_take(int(val))
+        await tel.send_inform_message("COLLECTOR_API", f"force_take: {val}", "", False)
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
+
 async def part(val: str):
     try:
         Commands.set_partial_pos(int(val))
@@ -304,6 +311,7 @@ def init_commander():
     sv.commander.add_command(["futperc"], futperc)
     sv.commander.add_command(["pids"], get_pids)
     sv.commander.add_command(["com"], commands_db)
+    sv.commander.add_command(["force"], force)
     sv.commander.add_command(["types"], types)
     sv.commander.add_command(["mode"], aloud_mode)
     sv.commander.add_command(["cor"], exp_cor)
