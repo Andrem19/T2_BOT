@@ -65,6 +65,21 @@ def _resolve_project_root() -> Path:
             return p
     return Path.cwd().resolve()
 
+def _round_to_nearest_hour_utc(dt: datetime) -> datetime:
+    """
+    Округление к ближайшему часу по UTC.
+    Правило: если минут < 30 — вниз, если минут ≥ 30 — вверх.
+    Пример: 11:59:41Z -> 12:00:00Z; 12:05:00Z -> 12:00:00Z; 12:30:00Z -> 13:00:00Z.
+    """
+    if dt.tzinfo is None:
+        # Считаем, что вход всегда в UTC, но на всякий случай делаем явным:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    base = dt.replace(minute=0, second=0, microsecond=0)
+    half_hour = base + timedelta(minutes=30)
+    return base if dt < half_hour else base + timedelta(hours=1)
+
+
 def _append_json_line(file_path: Path, payload: Dict[str, Any]) -> None:
     file_path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -76,9 +91,9 @@ def _next_trigger_57(now: datetime) -> datetime:
     Ближайшее локальное время с минутой = 57 и секундами = 0.
     Если уже прошли :57 текущего часа — берём следующий час.
     """
-    target = now.replace(minute=50, second=0, microsecond=0)
+    target = now.replace(minute=58, second=0, microsecond=0)
     if now >= target:
-        target = (target + timedelta(hours=1)).replace(minute=50, second=0, microsecond=0)
+        target = (target + timedelta(hours=1)).replace(minute=58, second=0, microsecond=0)
     return target
 
 # ------------------------------ РЕАЛЬНЫЕ ЗАДАЧИ ------------------------------
@@ -296,7 +311,9 @@ class HourlyAt57Scheduler:
             t2_res: Dict[str, Any] = await task_two(t1_res)
             
             payload: Dict[str, Any] = dict(t2_res) if isinstance(t2_res, dict) else {"result": t2_res}
-            payload["time_utc"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+            date = datetime.now(timezone.utc)
+            new_d = str(_round_to_nearest_hour_utc(date))
+            payload["time_utc"] = new_d
             payload["per_metric"]["news_score"] = news_score or {'score': 0}
 
             minify_dict = map_time_to_score([payload])
