@@ -55,10 +55,10 @@ async def rem():
     except Exception as e:
         await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
 
-async def force(val: str):
+async def force():
     try:
-        Commands.set_force_take(int(val))
-        await tel.send_inform_message("COLLECTOR_API", f"force_take: {val}", "", False)
+        Commands.set_force_take(True)
+        await tel.send_inform_message("COLLECTOR_API", f"force_take: {True}", "", False)
     except Exception as e:
         await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
 
