@@ -69,11 +69,17 @@ def _round_to_nearest_hour_utc(dt: datetime) -> datetime:
     """
     Округление к ближайшему часу по UTC.
     Правило: если минут < 30 — вниз, если минут ≥ 30 — вверх.
-    Пример: 11:59:41Z -> 12:00:00Z; 12:05:00Z -> 12:00:00Z; 12:30:00Z -> 13:00:00Z.
+    Примеры:
+      11:59:41Z -> 12:00:00Z
+      12:05:00Z -> 12:00:00Z
+      12:30:00Z -> 13:00:00Z
     """
     if dt.tzinfo is None:
-        # Считаем, что вход всегда в UTC, но на всякий случай делаем явным:
+        # Если пришёл наивный datetime — считаем, что он в UTC
         dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        # Нормализуем в UTC на случай другого часового пояса
+        dt = dt.astimezone(timezone.utc)
 
     base = dt.replace(minute=0, second=0, microsecond=0)
     half_hour = base + timedelta(minutes=30)
@@ -313,7 +319,8 @@ class HourlyAt57Scheduler:
             
             payload: Dict[str, Any] = dict(t2_res) if isinstance(t2_res, dict) else {"result": t2_res}
             date = datetime.now(timezone.utc)
-            new_d = str(_round_to_nearest_hour_utc(date))
+            rounded = _round_to_nearest_hour_utc(date)
+            new_d = rounded.strftime('%Y-%m-%dT%H:%M:%SZ')
             payload["time_utc"] = new_d
             payload["per_metric"]["news_score"] = news_score or {'score': 0}
             payload["per_metric"]["rr25"] = {'score': rr25} or {'score': 0}
