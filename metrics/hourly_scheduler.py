@@ -316,8 +316,8 @@ class HourlyAt57Scheduler:
             new_d = str(_round_to_nearest_hour_utc(date))
             payload["time_utc"] = new_d
             payload["per_metric"]["news_score"] = news_score or {'score': 0}
-            payload["per_metric"]["rr25"] = rr25 or {'score': 0}
-            payload["per_metric"]["iv"] = iv or {'score': 0}
+            payload["per_metric"]["rr25"] = {'score': rr25} or {'score': 0}
+            payload["per_metric"]["iv"] = {'score': iv} or {'score': 0}
 
             minify_dict = map_time_to_score([payload])
             pretty_str = tools.dict_to_pretty_string(minify_dict)
