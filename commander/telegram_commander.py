@@ -9,6 +9,8 @@ import os
 import shared_vars as sv
 from commander.com import Commander
 
+
+
 # Используем тот же стек, что и раньше
 from telegram.error import NetworkError, RetryAfter, TimedOut
 from telegram.request import HTTPXRequest
@@ -26,10 +28,33 @@ import services.serv as serv
 from helpers.statistics import compute_trade_stats, visualize_trade_stats
 from commander.service import format_trades_report, tail_log
 from metrics.serv import read_last_metrics, map_time_to_score, extract_scores_by_time
-
+from metrics.vizualize import render_btc_indicators_chart
+from metrics.load_metrics import load_compact_metrics
+from metrics.feature_synergy import analyze_feature_synergies, format_synergies
 # ---------------------------------------------------------------------------
 # Команды
 # ---------------------------------------------------------------------------
+
+async def lig(mode: str = None):
+    try:
+        sample = load_compact_metrics('metrics.json')
+        
+        keys=['stables', 'breadth', 'macro', 'cross', 'price_oi_funding', 'sentiment', 'calendar', 'basis', 'orderbook', 'flows']
+        exclude = []
+        if mode == 'm':
+            exclude = keys
+            
+        path = render_btc_indicators_chart(sample, exclude_keys=exclude, interval='15m')
+        
+        res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
+                                    bins=2, min_support=5, k_max=2, topn=10)
+        result = format_synergies(res)
+        
+        
+        await tel.send_inform_message("COLLECTOR_API", result, path, True)
+        
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
 
 async def rem():
     try:
@@ -306,6 +331,7 @@ def init_commander():
     sv.commander.add_command(["amount"], amount)
     sv.commander.add_command(["expect"], expect)
     sv.commander.add_command(["ind"], index)
+    sv.commander.add_command(["lig"], lig)
     sv.commander.add_command(["rem"], rem)
     sv.commander.add_command(["score"], score)
     sv.commander.add_command(["futperc"], futperc)
