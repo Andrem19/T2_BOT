@@ -137,7 +137,6 @@ async def news_metric():
                     {"role": "system", "content": system_msg},
                     {"role": "user",   "content": f"{user_prompt}\n\nNEWS:\n{news_text}"},
                 ],
-                temperature=0,
                 stream=False,
             )
 
