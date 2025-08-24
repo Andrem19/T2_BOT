@@ -99,9 +99,9 @@ def _next_trigger_57(now: datetime) -> datetime:
     Ближайшее локальное время с минутой = 57 и секундами = 0.
     Если уже прошли :57 текущего часа — берём следующий час.
     """
-    target = now.replace(minute=1, second=0, microsecond=0)
+    target = now.replace(minute=59, second=0, microsecond=0)
     if now >= target:
-        target = (target + timedelta(hours=1)).replace(minute=1, second=0, microsecond=0)
+        target = (target + timedelta(hours=1)).replace(minute=59, second=0, microsecond=0)
     return target
 
 # ------------------------------ РЕАЛЬНЫЕ ЗАДАЧИ ------------------------------
@@ -333,7 +333,7 @@ class HourlyAt57Scheduler:
             # 3) Пишем в файл ТОЛЬКО результат task_two + time_utc (UTC)
             try:
                 _append_json_line(self.cfg.metrics_path, payload)
-                await asyncio.sleep(2)
+                await asyncio.sleep(70)
                 sample = load_compact_metrics('metrics.json')
 
                 res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
