@@ -49,7 +49,7 @@ async def main() -> None:
                                     bins=2, min_support=8, k_max=3, topn=10)
         result = format_synergies(res)
         print('=====================================')
-        print(res)
+        print(result)
         
         # await tel.send_inform_message("COLLECTOR_API", '', path, True)
         # await asyncio.sleep(2)

@@ -3,7 +3,6 @@
 
 import math
 import time
-import json
 import itertools
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime, timedelta, timezone
@@ -83,10 +82,7 @@ def fetch_binance_klines(
     if interval != "1h":
         raise ValueError("В рамках задачи используем именно interval='1h'.")
 
-    # Binance использует открытие свечи в миллисекундах от UTC.
     start_ms = _to_ms(_floor_hour(start_time))
-    # endTime в Binance - эксклюзивная граница; чтобы гарантировать включение последней свечи,
-    # сдвигаем +1мс от конца часа.
     end_ms = _to_ms(_ceil_hour(end_time))
 
     all_rows = []
@@ -106,14 +102,10 @@ def fetch_binance_klines(
         if not rows:
             break
 
-        # rows: [ [openTime, open, high, low, close, volume, closeTime, ...], ... ]
         all_rows.extend(rows)
-
-        last_open = rows[-1][0]  # ms
-        # Следующий запрос начинаем с (последний open + 1мс), чтобы не зациклиться
+        last_open = rows[-1][0]
         next_start = last_open + 1
         if next_start <= cur:
-            # страховка от зацикливания
             next_start = cur + 3600_000
         cur = next_start
         time.sleep(pause_sec_between_calls)
@@ -131,7 +123,6 @@ def fetch_binance_klines(
         "volume":     arr[:, 5].astype(np.float64),
         "close_time": arr[:, 6].astype(np.int64),
     })
-    # на всякий случай уберём дубликаты и отсортируем
     df = df.drop_duplicates(subset=["open_time"]).sort_values("open_time").reset_index(drop=True)
     return df
 
@@ -144,7 +135,7 @@ def indicators_to_df(indicators: List[Dict]) -> pd.DataFrame:
     """
     Из списка словарей формирует DataFrame.
     Добавляет столбец open_time (UTC, миллисекунды) как время открытия соответствующей свечи.
-    Доп. правка: безопасное приведение типов без deprecated errors='ignore'.
+    Безопасное приведение типов без deprecated errors='ignore'.
     """
     if not indicators:
         raise ValueError("Список индикаторов пуст.")
@@ -154,7 +145,7 @@ def indicators_to_df(indicators: List[Dict]) -> pd.DataFrame:
         if "time" not in row:
             raise ValueError("Каждый словарь обязан иметь ключ 'time'.")
         dt = _dt_parse_to_utc(str(row["time"]))
-        dt = _floor_hour(dt)  # строго к началу часа
+        dt = _floor_hour(dt)
         open_ms = _to_ms(dt)
 
         feat = {k: v for k, v in row.items() if k != "time"}
@@ -163,8 +154,6 @@ def indicators_to_df(indicators: List[Dict]) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
 
-    # Аккуратно приводим потенциально числовые фичи к float,
-    # но только если конвертация действительно проходит без ошибок.
     for c in df.columns:
         if c == "open_time":
             continue
@@ -178,7 +167,6 @@ def indicators_to_df(indicators: List[Dict]) -> pd.DataFrame:
     return df
 
 
-
 # ==============================
 #    Матчинг, таргеты, метрики
 # ==============================
@@ -188,12 +176,13 @@ def build_targets(
     df_klines: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Жёстко матчует индикаторы к свече по open_time и рассчитывает таргеты:
+    Матчит индикаторы к свече по open_time и рассчитывает:
       - ret_same_hour: (close - open)/open для той же свечи
-      - ret_next_hour: (next_close - this_open)/this_open
+      - ret_next_hour: (next_close - this_open)/this_open (может быть NaN для последней строки)
       - target_same_hour: 'UP'/'DOWN'/'FLAT'
-      - target_next_hour: 'UP'/'DOWN'/'FLAT'
-    Возвращает объединённый DataFrame (только те строки, где нашлась свеча).
+      - target_next_hour: 'UP'/'DOWN'/'FLAT' (может быть NaN для последней строки)
+      - has_next: bool — есть ли следующий час
+    ВАЖНО: Последняя строка теперь НЕ отбрасывается, даже если нет next_close.
     """
     if df_feats.empty or df_klines.empty:
         return pd.DataFrame()
@@ -216,9 +205,13 @@ def build_targets(
         return "UP" if x > 0 else "DOWN"
 
     m["target_same_hour"] = m["ret_same_hour"].apply(labeler)
-    m["target_next_hour"] = m["ret_next_hour"].apply(labeler)
+    # Для target_next_hour оставляем NaN, если ret_next_hour NaN
+    m["target_next_hour"] = m["ret_next_hour"].apply(lambda x: labeler(x) if pd.notna(x) else np.nan)
 
-    m = m.dropna(subset=["ret_same_hour", "ret_next_hour"]).reset_index(drop=True)
+    m["has_next"] = m["ret_next_hour"].notna()
+
+    # ВНИМАНИЕ: НЕ дропаем последнюю строку — она нужна для «последнего сигнала»
+    m = m.reset_index(drop=True)
     return m
 
 
@@ -226,42 +219,52 @@ def build_targets(
 #    Поиск «связок признаков»
 # ==============================
 
-def _bin_features(df: pd.DataFrame, cols: List[str], bins: int = 3) -> Tuple[pd.DataFrame, Dict[str, np.ndarray]]:
+def _labels_for_bins(n: int) -> List[str]:
+    if n == 2:  return ["low","high"]
+    if n == 3:  return ["low","mid","high"]
+    if n == 4:  return ["q1","q2","q3","q4"]
+    if n == 5:  return ["q1","q2","q3","q4","q5"]
+    # fallback
+    return [f"b{i+1}" for i in range(n)]
+
+def _bin_features(df: pd.DataFrame, cols: List[str], bins: int = 3) -> Tuple[pd.DataFrame, Dict[str, np.ndarray], Dict[str, List[str]]]:
     """
-    Квантильное бинингование признаков. Возвращает:
-      - df_binned: DataFrame с *_bin колонками (строки 'low'/'mid'/'high' при bins=3)
-      - cut_map: границы бинов (массивы квантилей) для каждого признака
+    Квантильное бинингование признаков на ДАННОМ df.
+    Возвращает:
+      - df_binned: df + *_bin колонки
+      - cut_map:   {col: np.ndarray(bin_edges)}
+      - label_map: {col: список меток для этих edges}
     """
     df_binned = df.copy()
     cut_map: Dict[str, np.ndarray] = {}
-    labels = None
-    if bins == 2:
-        labels = ["low", "high"]
-    elif bins == 3:
-        labels = ["low", "mid", "high"]
-    elif bins == 4:
-        labels = ["q1","q2","q3","q4"]
-    elif bins == 5:
-        labels = ["q1","q2","q3","q4","q5"]
+    label_map: Dict[str, List[str]] = {}
 
     for c in cols:
         if not np.issubdtype(df_binned[c].dtype, np.number):
             continue
-        if df_binned[c].nunique(dropna=True) < bins:
+        if df_binned[c].nunique(dropna=True) < min(2, bins):
             continue
         try:
-            cats, bins_idx = pd.qcut(df_binned[c], q=bins, labels=labels, duplicates="drop", retbins=True)
-            df_binned[c + "_bin"] = cats.astype(str)
-            cut_map[c] = bins_idx
+            cats, edges = pd.qcut(df_binned[c], q=bins, labels=None, retbins=True, duplicates="drop")
+            n_bins = len(edges) - 1
+            labels = _labels_for_bins(n_bins)
+            df_binned[c + "_bin"] = pd.cut(df_binned[c], bins=edges, labels=labels, include_lowest=True).astype(str)
+            cut_map[c] = edges
+            label_map[c] = labels
         except Exception:
             continue
-    return df_binned, cut_map
+    return df_binned, cut_map, label_map
+
+def _assign_bin_single(value: float, edges: np.ndarray, labels: List[str]) -> str:
+    """Классифицирует одно значение по заранее известным границам и меткам."""
+    try:
+        cat = pd.cut(pd.Series([value]), bins=edges, labels=labels, include_lowest=True).astype(str).iloc[0]
+        return str(cat)
+    except Exception:
+        return "nan"
 
 def _proportion_z_test(p1: float, n1: int, p0: float, n0: int) -> float:
-    """
-    Z-тест на разность долей (апрокс. нормалью).
-    Возвращает z-score (чем выше |z|, тем значимее отличие).
-    """
+    """Z-тест на разность долей (апрокс. нормалью)."""
     if n1 == 0 or n0 == 0:
         return 0.0
     se = math.sqrt(p0 * (1 - p0) * (1.0/n1 + 1.0/n0))
@@ -277,10 +280,7 @@ def _combo_report(
     target_col: str,
     ret_col: str,
 ) -> Optional[Dict]:
-    """
-    Строит метрики по подвыборке mask (связка условий).
-    Возвращает словарь с n, up_rate, lift, z, mean_ret, ret_lift.
-    """
+    """Метрики по подвыборке mask."""
     sub = df[mask]
     n1 = len(sub)
     if n1 == 0:
@@ -313,41 +313,41 @@ def find_feature_synergies(
     exclude_cols: Optional[List[str]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """
-    Ищет «связки признаков» по квантильным бинам (пары и, опционально, тройки).
-    Возвращает:
-      - pairs, triples: найденные правила,
-      - base: базовые метрики,
-      - pair_support: диагностическая таблица по поддержке каждой комбинации бинов.
+    Ищет «связки признаков» по квантильным бинам.
+    ВНИМАНИЕ: обучение ведём ТОЛЬКО на строках, где есть следующий час (has_next=True),
+    чтобы не искажать базовые метрики.
     """
     if exclude_cols is None:
         exclude_cols = ["open_time", "open", "close", "next_close",
                         "ret_same_hour", "ret_next_hour",
-                        "target_same_hour", "target_next_hour"]
+                        "target_same_hour", "target_next_hour", "has_next"]
 
-    feature_cols = [c for c in df_labeled.columns
+    # --- Обучающая часть (есть следующий час) ---
+    df_train = df_labeled[df_labeled["has_next"] == True].copy()
+    if df_train.empty:
+        raise ValueError("Нет строк с известным 'следующим часом' для обучения правил.")
+
+    feature_cols = [c for c in df_train.columns
                     if c not in exclude_cols
-                    and np.issubdtype(df_labeled[c].dtype, np.number)]
+                    and np.issubdtype(df_train[c].dtype, np.number)]
 
-    # Биннинг
-    df_binned, cut_map = _bin_features(df_labeled, feature_cols, bins=bins)
+    # Биннинг ТОЛЬКО на обучении
+    df_binned_train, cut_map, label_map = _bin_features(df_train, feature_cols, bins=bins)
 
-    binned_cols = [c for c in feature_cols if c + "_bin" in df_binned.columns]
-    if len(binned_cols) < 2:
-        raise ValueError("Недостаточно признаков для построения связок (биннинг не прошёл).")
+    # База (только train)
+    base_up_rate = (df_binned_train[use_target] == "UP").mean()
+    base_ret_mean = df_binned_train[use_return].mean()
 
-    # База
-    base_up_rate = (df_binned[use_target] == "UP").mean()
-    base_ret_mean = df_binned[use_return].mean()
-
-    # Диагностика: поддержка для всех пар (до фильтров)
+    # Диагностика: поддержка по всем парам
     sup_rows = []
+    binned_cols = [c for c in feature_cols if c + "_bin" in df_binned_train.columns]
     for a, b in itertools.combinations(binned_cols, 2):
-        avs = df_binned[a + "_bin"].dropna().unique()
-        bvs = df_binned[b + "_bin"].dropna().unique()
+        avs = df_binned_train[a + "_bin"].dropna().unique()
+        bvs = df_binned_train[b + "_bin"].dropna().unique()
         for av in avs:
             for bv in bvs:
-                n = int(((df_binned[a + "_bin"] == av) &
-                         (df_binned[b + "_bin"] == bv)).sum())
+                n = int(((df_binned_train[a + "_bin"] == av) &
+                         (df_binned_train[b + "_bin"] == bv)).sum())
                 sup_rows.append({"feat_a": a, "bin_a": str(av),
                                  "feat_b": b, "bin_b": str(bv),
                                  "n": n})
@@ -358,9 +358,9 @@ def find_feature_synergies(
     for _, r in pair_support.iterrows():
         if r["n"] < min_support:
             continue
-        mask = ((df_binned[r["feat_a"] + "_bin"] == r["bin_a"]) &
-                (df_binned[r["feat_b"] + "_bin"] == r["bin_b"]))
-        rep = _combo_report(df_binned, mask, base_up_rate, base_ret_mean,
+        mask = ((df_binned_train[r["feat_a"] + "_bin"] == r["bin_a"]) &
+                (df_binned_train[r["feat_b"] + "_bin"] == r["bin_b"]))
+        rep = _combo_report(df_binned_train, mask, base_up_rate, base_ret_mean,
                             use_target, use_return)
         if rep:
             results_pairs.append({**r.to_dict(), **rep})
@@ -370,23 +370,23 @@ def find_feature_synergies(
         df_pairs["score"] = df_pairs["z"].abs() * np.log1p(df_pairs["n"]) + 5.0 * df_pairs["lift"].abs()
         df_pairs = df_pairs.sort_values(["score","n","z"], ascending=[False, False, False]).head(topn).reset_index(drop=True)
 
-    # Поиск троек (опционально)
+    # Тройки (опционально)
     results_triples = []
     if k_max >= 3 and len(binned_cols) >= 3:
         for a, b, c in itertools.combinations(binned_cols, 3):
-            a_vals = df_binned[a + "_bin"].dropna().unique()
-            b_vals = df_binned[b + "_bin"].dropna().unique()
-            c_vals = df_binned[c + "_bin"].dropna().unique()
+            a_vals = df_binned_train[a + "_bin"].dropna().unique()
+            b_vals = df_binned_train[b + "_bin"].dropna().unique()
+            c_vals = df_binned_train[c + "_bin"].dropna().unique()
             for av in a_vals:
                 for bv in b_vals:
                     for cv in c_vals:
-                        mask = ((df_binned[a + "_bin"] == av) &
-                                (df_binned[b + "_bin"] == bv) &
-                                (df_binned[c + "_bin"] == cv))
+                        mask = ((df_binned_train[a + "_bin"] == av) &
+                                (df_binned_train[b + "_bin"] == bv) &
+                                (df_binned_train[c + "_bin"] == cv))
                         n = int(mask.sum())
                         if n < min_support:
                             continue
-                        rep = _combo_report(df_binned, mask, base_up_rate, base_ret_mean,
+                        rep = _combo_report(df_binned_train, mask, base_up_rate, base_ret_mean,
                                             use_target, use_return)
                         if rep:
                             results_triples.append({
@@ -403,7 +403,7 @@ def find_feature_synergies(
         df_triples = pd.DataFrame(columns=["feat_a","bin_a","feat_b","bin_b","feat_c","bin_c","n","up_rate","lift","z","mean_ret","ret_lift","score"])
 
     base_df = pd.DataFrame([{
-        "N_total": int(len(df_binned)),
+        "N_total": int(len(df_binned_train)),
         "base_up_rate": float(base_up_rate),
         "base_ret_mean": float(base_ret_mean),
         "bins": int(bins),
@@ -415,104 +415,91 @@ def find_feature_synergies(
         "triples": df_triples,
         "base": base_df,
         "pair_support": pair_support,
-        # Возвращаем для прозрачноcти (используется ниже для последнего сигнала)
-        "df_binned": df_binned,
+        # для вычисления «последнего» сигнала:
+        "df_binned_train": df_binned_train,
         "cut_map": cut_map,
+        "label_map": label_map,
+        "feature_cols": binned_cols,
     }
 
 
-
 # ==============================
-#      Главный конвейер
+#      Последний сигнал (всегда по самой последней свече)
 # ==============================
 
 def _compute_latest_signal(
-    df_labeled: pd.DataFrame,
-    df_pairs: pd.DataFrame,
-    bins: int,
-    exclude_cols: Optional[List[str]] = None,
+    df_labeled_all: pd.DataFrame,
+    pairs: pd.DataFrame,
+    df_binned_train: pd.DataFrame,
+    cut_map: Dict[str, np.ndarray],
+    label_map: Dict[str, List[str]],
+    feature_cols: List[str],
 ) -> Dict:
     """
-    Рассчитывает «последний» сигнал по топ-5 правилам (пары).
-    Алгоритм:
-      - заново бинируем признаки на df_labeled,
-      - берём последнюю строку (макс. open_time),
-      - среди топ-5 правил оставляем только те, которые совпадают по бинам,
-      - голос каждого правила: raw = 2*up_rate - 1 ([-1..1]); вес = score>=0;
-      - итоговый балл = взвешенная сумма raw по совпавшим правилам, нормированная на сумму весов.
-      - если совпавших нет — берём базовый raw: 2*base_up_rate - 1.
-    Возвращает словарь со всеми деталями.
+    Считает «последний» сигнал ДЛЯ САМОЙ ПОСЛЕДНЕЙ ЗАПИСИ (макс. open_time),
+    даже если у неё нет следующего часа. Бины присваиваются по порогам cut_map/label_map,
+    которые получены на обучающей части (без утечки).
     """
-    if df_labeled.empty:
+    if df_labeled_all.empty:
         return {
             "latest_score": 0.0,
             "latest_open_time": None,
             "latest_bins": {},
             "latest_matched_rules": pd.DataFrame(columns=["feat_a","bin_a","feat_b","bin_b","matched","weight","raw","contribution","z","n","up_rate","lift","ret_lift","score"]),
-            "bin_edges": {},
+            "latest_used_fallback": True,
         }
 
-    # Определим последний open_time
-    last_open_time = int(df_labeled["open_time"].max())
-    last_row = df_labeled.loc[df_labeled["open_time"].idxmax()]
+    # Самая последняя строка (даже если has_next=False)
+    last_idx = df_labeled_all["open_time"].idxmax()
+    last_row = df_labeled_all.loc[last_idx]
+    last_time_ms = int(last_row["open_time"])
 
-    # Те же исключения, что и в поиске правил
-    if exclude_cols is None:
-        exclude_cols = ["open_time", "open", "close", "next_close",
-                        "ret_same_hour", "ret_next_hour",
-                        "target_same_hour", "target_next_hour"]
+    # Сформируем бины для последней строки по тренировочным порогам
+    latest_bins: Dict[str, str] = {}
+    for c in feature_cols:
+        val = float(last_row[c])
+        edges = cut_map.get(c, None)
+        labels = label_map.get(c, None)
+        if edges is not None and labels is not None:
+            latest_bins[c] = _assign_bin_single(val, edges, labels)
+        else:
+            latest_bins[c] = "nan"
 
-    feature_cols = [c for c in df_labeled.columns
-                    if c not in exclude_cols
-                    and np.issubdtype(df_labeled[c].dtype, np.number)]
-
-    # Биннингуем на всей выборке (как при построении правил)
-    df_binned, cut_map = _bin_features(df_labeled, feature_cols, bins=bins)
-    binned_cols = [c for c in feature_cols if c + "_bin" in df_binned.columns]
-
-    # Словарь бинов последней строки
-    last_idx = df_binned["open_time"].idxmax()
-    latest_bins = {}
-    for c in binned_cols:
-        latest_bins[c] = str(df_binned.loc[last_idx, c + "_bin"])
-
-    # Если пар нет — fallback к базе
-    if df_pairs is None or df_pairs.empty:
-        base_up_rate = (df_binned["target_next_hour"] == "UP").mean()
+    # Если правил нет — fallback к базе train
+    if pairs is None or pairs.empty:
+        base_up_rate = (df_binned_train["target_next_hour"] == "UP").mean()
         base_raw = float(2.0 * base_up_rate - 1.0)
         return {
             "latest_score": float(np.clip(base_raw, -1.0, 1.0)),
-            "latest_open_time": last_open_time,
+            "latest_open_time": last_time_ms,
             "latest_bins": latest_bins,
             "latest_matched_rules": pd.DataFrame(columns=["feat_a","bin_a","feat_b","bin_b","matched","weight","raw","contribution","z","n","up_rate","lift","ret_lift","score"]),
-            "bin_edges": {k: v for k, v in cut_map.items()},
+            "latest_used_fallback": True,
         }
 
-    # Берём топ-5 по score (вход df_pairs уже отсортирован и усечён в find_feature_synergies)
-    top5 = df_pairs.head(5).copy()
-
+    # Голосование top-5 правил
+    top5 = pairs.head(5).copy()
     rows = []
     num = 0.0
     den = 0.0
     for _, r in top5.iterrows():
         a, b = r["feat_a"], r["feat_b"]
-        a_bin_need, b_bin_need = str(r["bin_a"]), str(r["bin_b"])
-        a_bin_is = latest_bins.get(a, None)
-        b_bin_is = latest_bins.get(b, None)
-        matched = (a_bin_is == a_bin_need) and (b_bin_is == b_bin_need)
+        need_a, need_b = str(r["bin_a"]), str(r["bin_b"])
+        is_a = latest_bins.get(a, None)
+        is_b = latest_bins.get(b, None)
+        matched = (is_a == need_a) and (is_b == need_b)
 
-        # Базовый «направленный» сигнал правила: +1 … -1
-        raw = float(2.0 * r["up_rate"] - 1.0)
+        raw = float(2.0 * r["up_rate"] - 1.0)          # направление правила [-1..1]
         weight = float(max(0.0, r.get("score", 0.0)))  # неотрицательный вес
-
         contrib = raw * weight if matched else 0.0
+
         if matched and weight > 0:
             num += contrib
             den += weight
 
         rows.append({
-            "feat_a": a, "bin_a": a_bin_need,
-            "feat_b": b, "bin_b": b_bin_need,
+            "feat_a": a, "bin_a": need_a,
+            "feat_b": b, "bin_b": need_b,
             "matched": bool(matched),
             "weight": weight,
             "raw": raw,
@@ -529,19 +516,24 @@ def _compute_latest_signal(
 
     if den > 0:
         final_score = float(np.clip(num / den, -1.0, 1.0))
+        used_fallback = False
     else:
-        # Если ни одно топ-правило не совпало — fallback к базе по всей выборке
-        base_up_rate = (df_binned["target_next_hour"] == "UP").mean()
+        base_up_rate = (df_binned_train["target_next_hour"] == "UP").mean()
         final_score = float(np.clip(2.0 * base_up_rate - 1.0, -1.0, 1.0))
+        used_fallback = True
 
     return {
         "latest_score": final_score,
-        "latest_open_time": last_open_time,
+        "latest_open_time": last_time_ms,
         "latest_bins": latest_bins,
         "latest_matched_rules": matched_df,
-        "bin_edges": {k: v for k, v in cut_map.items()},
+        "latest_used_fallback": used_fallback,
     }
 
+
+# ==============================
+#      Главный конвейер
+# ==============================
 
 def analyze_feature_synergies(
     indicators: List[Dict],
@@ -556,17 +548,11 @@ def analyze_feature_synergies(
     Полный конвейер:
       1) парсинг входа и определение диапазона,
       2) скачивание часовых свечей,
-      3) матчинг + таргеты,
-      4) поиск связок признаков,
-      5) ОЦЕНКА ПОСЛЕДНЕГО НАБОРА ИНДИКАТОРОВ: вычисление итогового балла [-1..1]
-         по топ-5 правил (пары), учитывая, в какие бины попадает последняя строка.
-    Возвращает словари:
-      'base', 'pairs', 'triples', 'pair_support', 'labeled',
-      а также:
-      'latest_score', 'latest_open_time', 'latest_bins',
-      'latest_matched_rules', 'bin_edges'.
+      3) матчинг + таргеты (сохраняем последнюю строку даже без next_close),
+      4) поиск связок на обучении (has_next=True),
+      5) «Последний сигнал» — ВСЕГДА по самой последней записи индикаторов.
     """
-    # 1) Вход -> DF
+    # 1) Вход
     df_feats_raw = indicators_to_df(indicators)
     if df_feats_raw.empty:
         raise ValueError("После парсинга признаков данных нет.")
@@ -588,15 +574,15 @@ def analyze_feature_synergies(
     if df_kl.empty:
         raise RuntimeError("Свечи не получены — проверьте символ/диапазон/рынок.")
 
-    # 3) Матчинг + таргеты
-    df_labeled = build_targets(df_feats_raw, df_kl)
-    if df_labeled.empty:
+    # 3) Матчинг + таргеты (НЕ отбрасываем последнюю строку)
+    df_labeled_all = build_targets(df_feats_raw, df_kl)
+    if df_labeled_all.empty:
         raise RuntimeError("Не удалось сматчить индикаторы к свечам (несовпадение open_time?).")
 
-    # 4) Связки
+    # 4) Связки (обучение только на has_next=True)
     packs = find_feature_synergies(
-        df_labeled=df_labeled,
-        use_target="target_next_hour",   # по умолчанию оцениваем «что будет на следующей свече»
+        df_labeled=df_labeled_all,
+        use_target="target_next_hour",
         use_return="ret_next_hour",
         bins=bins,
         min_support=min_support,
@@ -605,33 +591,35 @@ def analyze_feature_synergies(
         exclude_cols=None,
     )
 
-    # 5) Последний сигнал по топ-5 пар
+    # 5) Последний сигнал для самой последней строки
     latest_info = _compute_latest_signal(
-        df_labeled=df_labeled,
-        df_pairs=packs.get("pairs"),
-        bins=bins,
-        exclude_cols=None,
+        df_labeled_all=df_labeled_all,
+        pairs=packs.get("pairs"),
+        df_binned_train=packs.get("df_binned_train"),
+        cut_map=packs.get("cut_map"),
+        label_map=packs.get("label_map"),
+        feature_cols=packs.get("feature_cols", []),
     )
 
-    # Сохраняем всё в выходной словарь
-    packs["labeled"] = df_labeled
+    # Сохраняем результаты
+    packs["labeled"] = df_labeled_all
     packs["latest_score"] = latest_info["latest_score"]
     packs["latest_open_time"] = latest_info["latest_open_time"]
     packs["latest_bins"] = latest_info["latest_bins"]
     packs["latest_matched_rules"] = latest_info["latest_matched_rules"]
-    packs["bin_edges"] = latest_info["bin_edges"]
+    packs["latest_used_fallback"] = latest_info["latest_used_fallback"]
 
     return packs
 
 
 # ==============================
-#     Утилиты и пример запуска
+#     Утилиты и вывод
 # ==============================
 
 def pretty_print_synergies(result: Dict[str, pd.DataFrame]) -> None:
     """
     Печатает базовую статистику, ТОП-связки и «Последний сигнал».
-    Если связок нет — выводит диагностику: почему (поддержка/порог).
+    Чётко указывает, использован ли fallback.
     """
     base = result["base"].iloc[0].to_dict()
     N_total = int(base.get("N_total", 0))
@@ -675,31 +663,35 @@ def pretty_print_synergies(result: Dict[str, pd.DataFrame]) -> None:
                   f"{r['feat_a']}={r['bin_a']} & {r['feat_b']}={r['bin_b']} & {r['feat_c']}={r['bin_c']}")
         print()
 
-    # ---- Последний сигнал ----
+    # ---- Последний сигнал (всегда самая последняя запись) ----
     latest_score = result.get("latest_score", None)
     latest_open_time = result.get("latest_open_time", None)
-    latest_bins = result.get("latest_bins", {})
     latest_matched_rules = result.get("latest_matched_rules", pd.DataFrame())
+    used_fallback = bool(result.get("latest_used_fallback", False))
 
     if latest_open_time is not None:
         ts = datetime.fromtimestamp(latest_open_time/1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         print("Последний сигнал:")
         print(f"  Час (open_time): {ts}")
         print(f"  Итоговый балл [-1..1]: {latest_score:+.3f}")
-        if latest_matched_rules is not None and not latest_matched_rules.empty:
+        if latest_matched_rules is not None and not latest_matched_rules.empty and latest_matched_rules["matched"].any():
             print("  Совпавшие правила (вклад):")
             for _, r in latest_matched_rules[latest_matched_rules["matched"]].iterrows():
                 print(f"    {r['feat_a']}={r['bin_a']} & {r['feat_b']}={r['bin_b']}  "
                       f"raw={r['raw']:+.3f}, weight={r['weight']:.2f}, contrib={r['contribution']:+.3f}")
         else:
-            print("  Совпавших топ-правил нет, использована базовая оценка.")
+            print("  Совпавших топ-правил нет.", end=" ")
+            if used_fallback:
+                print("Использована базовая оценка обучающей выборки.")
+            else:
+                print()
         print()
 
 
 def format_synergies(result: Dict[str, pd.DataFrame], diagnostics_top: int = 10) -> str:
     """
-    Формирует человекочитаемую строку-отчёт по результатам анализа связок
-    и «Последнему сигналу», без печати (возвращает str).
+    Возвращает красиво отформатированный текст отчёта (без печати),
+    включая секцию «Последний сигнал» и пометку про fallback.
     """
     lines = []
 
@@ -736,11 +728,9 @@ def format_synergies(result: Dict[str, pd.DataFrame], diagnostics_top: int = 10)
             head = sup.head(diagnostics_top)
             for _, r in head.iterrows():
                 mark = " < min_support" if int(r["n"]) < min_support else ""
-                lines.append(f"  [{int(r['n']):>4}] {r['feat_a']}={r['bin_a']} & "
-                             f"{r['feat_b']}={r['bin_b']}{mark}")
+                lines.append(f"  [{int(r['n']):>4}] {r['feat_a']}={r['bin_a']} & {r['feat_b']}={r['bin_b']}{mark}")
             lines.append("")
-            lines.append("Рекомендации: уменьшите min_support или снизьте bins до 2, "
-                         "либо расширьте период данных.")
+            lines.append("Рекомендации: уменьшите min_support или снизьте bins до 2, либо расширьте период данных.")
         lines.append("")
 
     triples = result.get("triples", pd.DataFrame())
@@ -754,24 +744,27 @@ def format_synergies(result: Dict[str, pd.DataFrame], diagnostics_top: int = 10)
             )
         lines.append("")
 
-    # ---- Последний сигнал ----
     latest_score = result.get("latest_score", None)
     latest_open_time = result.get("latest_open_time", None)
-    latest_bins = result.get("latest_bins", {})
     latest_matched_rules = result.get("latest_matched_rules", pd.DataFrame())
+    used_fallback = bool(result.get("latest_used_fallback", False))
 
     if latest_open_time is not None:
         ts = datetime.fromtimestamp(latest_open_time/1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         lines.append("Последний сигнал:")
         lines.append(f"  Час (open_time): {ts}")
         lines.append(f"  Итоговый балл [-1..1]: {latest_score:+.3f}")
-        if latest_matched_rules is not None and not latest_matched_rules.empty:
+        if latest_matched_rules is not None and not latest_matched_rules.empty and latest_matched_rules["matched"].any():
             lines.append("  Совпавшие правила (вклад):")
             for _, r in latest_matched_rules[latest_matched_rules["matched"]].iterrows():
                 lines.append(f"    {r['feat_a']}={r['bin_a']} & {r['feat_b']}={r['bin_b']}  "
                              f"raw={r['raw']:+.3f}, weight={r['weight']:.2f}, contrib={r['contribution']:+.3f}")
         else:
-            lines.append("  Совпавших топ-правил нет, использована базовая оценка.")
+            if used_fallback:
+                lines.append("  Совпавших топ-правил нет. Использована базовая оценка обучающей выборки.")
+            else:
+                lines.append("  Совпавших топ-правил нет.")
         lines.append("")
 
     return "\n".join(lines)
+

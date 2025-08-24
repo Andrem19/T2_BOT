@@ -338,8 +338,10 @@ class HourlyAt57Scheduler:
                                             bins=2, min_support=8, k_max=3, topn=10)
                 score = res['latest_score']
                 ts_ms = res['latest_open_time']
+                latest_matched_rules = res['latest_matched_rules']
                 ts_utc = datetime.fromtimestamp(ts_ms/1000, tz=timezone.utc)
                 minify_dict['fin_score'] = f'{ts_utc}: {round(score, 4)}'
+                minify_dict['latest_matched_rules'] = latest_matched_rules
                 pretty_str = tools.dict_to_pretty_string(minify_dict)
                 await tel.send_inform_message("COLLECTOR_API", f"{pretty_str}", "", False)
                 _logger.info("Метрика записана (%s). Только task_two + time_utc.", self.cfg.metrics_path)
