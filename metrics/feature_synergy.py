@@ -535,6 +535,53 @@ def _compute_latest_signal(
 #      Главный конвейер
 # ==============================
 
+def format_latest_signal_brief(result: Dict[str, pd.DataFrame]) -> str:
+    """
+    Возвращает краткий блок:
+      Последний сигнал:
+        Час (open_time): YYYY-MM-DD HH:MM:SS UTC
+        Итоговый балл [-1..1]: +0.000
+        Совпавших топ-правил нет. Использована базовая оценка обучающей выборки.
+    (или аналогичную третью строку в зависимости от наличия совпадений и fallback)
+    """
+    from datetime import datetime, timezone
+    import pandas as pd
+
+    # Время
+    ts_ms = result.get("latest_open_time", None)
+    if ts_ms is not None:
+        ts_str = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    else:
+        ts_str = "N/A"
+
+    # Балл
+    score = result.get("latest_score", None)
+    score_str = f"{float(score):+.3f}" if score is not None else "N/A"
+
+    # Совпадения и fallback
+    used_fallback = bool(result.get("latest_used_fallback", False))
+    matched_df = result.get("latest_matched_rules", pd.DataFrame())
+    matched_any = False
+    if isinstance(matched_df, pd.DataFrame) and not matched_df.empty and "matched" in matched_df.columns:
+        matched_any = bool(matched_df["matched"].any())
+
+    lines = []
+    lines.append("Последний сигнал:")
+    lines.append(f"  Час (open_time): {ts_str}")
+    lines.append(f"  Итоговый балл [-1..1]: {score_str}")
+
+    if matched_any:
+        # В вашем запросе нужен именно текст без перечисления вкладов.
+        lines.append("  Совпавшие топ-правила есть.")
+    else:
+        if used_fallback:
+            lines.append("  Совпавших топ-правил нет. Использована базовая оценка обучающей выборки.")
+        else:
+            lines.append("  Совпавших топ-правил нет.")
+
+    return "\n".join(lines)
+
+
 def analyze_feature_synergies(
     indicators: List[Dict],
     symbol: str = "BTCUSDT",

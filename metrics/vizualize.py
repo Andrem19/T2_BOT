@@ -297,7 +297,14 @@ def render_btc_indicators_chart(
     Рисует свечи BTCUSDT за точное окно метрик и накладывает ВСЕ индикаторы (кроме 'time'),
     с возможностью исключения через exclude_keys. Таймфрейм — любой Binance interval (e.g., '5m', '15m', '1h').
     Жёстко проверяет, что каждая метка признака — ровно на открытии часа и присутствует среди open_time свечей.
+
+    Сохранение:
+      - Если out_path не задан, сохраняет файл в дефолтную папку ./charts с именем
+        'btc_indicators_{interval}.png' и ПЕРЕЗАПИСЫВАЕТ файл при каждом рендере.
+      - Если out_path задан, гарантирует существование директории и ПЕРЕЗАПИСЫВАЕТ файл.
     """
+    import os  # локальный импорт для самодостаточности
+
     # 0) Набор ключей и метрики
     indicator_keys = _derive_indicator_keys(data_list, exclude_keys)
     metrics_df, t_min, t_max = _build_metrics_frame(data_list, indicator_keys)
@@ -397,15 +404,18 @@ def render_btc_indicators_chart(
                 bbox=dict(facecolor="white", edgecolor=color, boxstyle="round,pad=0.25", alpha=0.7)
             )
 
-    # Сохранение
+    # 5) Сохранение: дефолтная папка и перезапись файла
     if out_path is None:
-        out_path = os.path.abspath(
-            f"btc_indicators_{interval}_{t_min.strftime('%Y%m%dT%H%MZ')}_{t_max.strftime('%Y%m%dT%H%MZ')}.png"
-        )
-    out_dir = os.path.dirname(out_path)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
+        default_dir = os.path.abspath(os.path.join(os.getcwd(), "charts"))
+        os.makedirs(default_dir, exist_ok=True)
+        # фиксированное имя (перезапись) — одно на интервал
+        out_path = os.path.join(default_dir, f"btc_indicators_{interval}.png")
+    else:
+        out_dir = os.path.dirname(out_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+
     fig.tight_layout()
-    fig.savefig(out_path, bbox_inches="tight")
+    fig.savefig(out_path, bbox_inches="tight")  # fig.savefig по умолчанию перезаписывает существующий файл
     plt.close(fig)
     return out_path
