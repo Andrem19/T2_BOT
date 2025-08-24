@@ -49,7 +49,7 @@ async def lig(mode: str = None):
         res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
                                     bins=2, min_support=8, k_max=3, topn=10)
         result = format_synergies(res)
-        
+        print(path, result)
         
         await tel.send_inform_message("COLLECTOR_API", result, path, True)
         

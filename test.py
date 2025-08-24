@@ -41,7 +41,7 @@ async def main() -> None:
     print(path)
     # analyze_features_vs_market(res)
     res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
-                                    bins=2, min_support=5, k_max=2, topn=10)
+                                    bins=2, min_support=8, k_max=3, topn=10)
     result = format_synergies(res)
     print(result)
 
