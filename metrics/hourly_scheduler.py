@@ -334,6 +334,7 @@ class HourlyAt57Scheduler:
             try:
                 _append_json_line(self.cfg.metrics_path, payload)
                 sample = load_compact_metrics('metrics.json')
+                sample.append(payload)
                 res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
                                             bins=2, min_support=8, k_max=3, topn=10)
                 last_signal = format_latest_signal_brief(res)
