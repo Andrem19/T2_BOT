@@ -11,7 +11,9 @@ import logging
 import os
 import threading
 import time
+from metrics.feature_synergy import analyze_feature_synergies
 import uuid
+from metrics.load_metrics import load_compact_metrics
 from metrics.serv import map_time_to_score, get_rr25_iv
 import helpers.tools as tools
 import helpers.tlg as tel
@@ -327,11 +329,19 @@ class HourlyAt57Scheduler:
             payload["per_metric"]["iv"] = {'score': iv} or {'score': 0}
 
             minify_dict = map_time_to_score([payload])
-            pretty_str = tools.dict_to_pretty_string(minify_dict)
-            await tel.send_inform_message("COLLECTOR_API", f"{pretty_str}", "", False)
+
             # 3) Пишем в файл ТОЛЬКО результат task_two + time_utc (UTC)
             try:
                 _append_json_line(self.cfg.metrics_path, payload)
+                sample = load_compact_metrics('metrics.json')
+                res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
+                                            bins=2, min_support=8, k_max=3, topn=10)
+                score = res['latest_score']
+                ts_ms = res['latest_open_time']
+                ts_utc = datetime.fromtimestamp(ts_ms/1000, tz=timezone.utc)
+                minify_dict['fin_score'] = f'{ts_utc}: {round(score, 4)}'
+                pretty_str = tools.dict_to_pretty_string(minify_dict)
+                await tel.send_inform_message("COLLECTOR_API", f"{pretty_str}", "", False)
                 _logger.info("Метрика записана (%s). Только task_two + time_utc.", self.cfg.metrics_path)
             except Exception as write_exc:
                 status = "error"

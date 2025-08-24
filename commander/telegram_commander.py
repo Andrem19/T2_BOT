@@ -51,7 +51,9 @@ async def lig(mode: str = None):
         result = format_synergies(res)
         print(path, result)
         
-        await tel.send_inform_message("COLLECTOR_API", result, path, True)
+        await tel.send_inform_message("COLLECTOR_API", '', path, True)
+        await asyncio.sleep(2)
+        await tel.send_inform_message("COLLECTOR_API", result, '', False)
         
     except Exception as e:
         await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)

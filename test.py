@@ -30,21 +30,30 @@ from metrics.serv import get_rr25_iv
 import re
 from metrics.indicators import MarketIntel
 import json
+import helpers.tlg as tel
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 
 async def main() -> None:
-    sample = load_compact_metrics('metrics.json')
-    #exclude_keys=['stables', 'breadth', 'macro', 'cross', 'price_oi_funding', 'sentiment', 'calendar', 'basis', 'orderbook', 'flows']
-    path = render_btc_indicators_chart(sample, interval='15m')
-    print(path)
-    # analyze_features_vs_market(res)
-    res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
-                                    bins=2, min_support=8, k_max=3, topn=10)
-    result = format_synergies(res)
-    print(result)
+        sample = load_compact_metrics('metrics.json')
+        
+        keys=['stables', 'breadth', 'macro', 'price_oi_funding', 'sentiment', 'calendar', 'basis', 'orderbook', 'flows']
+        exclude = []
 
+        exclude = keys
+            
+        path = render_btc_indicators_chart(sample, exclude_keys=exclude, interval='15m')
+        
+        res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
+                                    bins=2, min_support=8, k_max=3, topn=10)
+        result = format_synergies(res)
+        print('=====================================')
+        print(res)
+        
+        # await tel.send_inform_message("COLLECTOR_API", '', path, True)
+        # await asyncio.sleep(2)
+        # await tel.send_inform_message("COLLECTOR_API", result, '', False)
 
 if __name__ == "__main__":
     asyncio.run(main())
