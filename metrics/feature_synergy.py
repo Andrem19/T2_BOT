@@ -535,44 +535,71 @@ def _compute_latest_signal(
 #      Главный конвейер
 # ==============================
 
-def format_latest_signal_brief(result: Dict[str, pd.DataFrame]) -> str:
+def format_latest_signal_brief(result: Dict[str, pd.DataFrame],
+                               max_rules: int = 10) -> str:
     """
     Возвращает краткий блок:
       Последний сигнал:
         Час (open_time): YYYY-MM-DD HH:MM:SS UTC
         Итоговый балл [-1..1]: +0.000
-        Совпавших топ-правил нет. Использована базовая оценка обучающей выборки.
-    (или аналогичную третью строку в зависимости от наличия совпадений и fallback)
+        Совпавшие правила (вклад):
+          feat_a=bin_a & feat_b=bin_b  raw=+0.123, weight=1.23, contrib=+0.151
+          ...
+    Если совпадений нет — выводит соответствующее сообщение (с пометкой о fallback при необходимости).
     """
     from datetime import datetime, timezone
     import pandas as pd
 
     # Время
-    ts_ms = result.get("latest_open_time", None)
-    if ts_ms is not None:
-        ts_str = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    else:
-        ts_str = "N/A"
+    ts_ms = result.get("latest_open_time")
+    ts_str = (datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc)
+              .strftime("%Y-%m-%d %H:%M:%S UTC")) if ts_ms is not None else "N/A"
 
     # Балл
-    score = result.get("latest_score", None)
+    score = result.get("latest_score")
     score_str = f"{float(score):+.3f}" if score is not None else "N/A"
 
-    # Совпадения и fallback
+    # Совпадения / fallback
     used_fallback = bool(result.get("latest_used_fallback", False))
     matched_df = result.get("latest_matched_rules", pd.DataFrame())
-    matched_any = False
-    if isinstance(matched_df, pd.DataFrame) and not matched_df.empty and "matched" in matched_df.columns:
-        matched_any = bool(matched_df["matched"].any())
 
     lines = []
     lines.append("Последний сигнал:")
     lines.append(f"  Час (open_time): {ts_str}")
     lines.append(f"  Итоговый балл [-1..1]: {score_str}")
 
+    matched_any = (
+        isinstance(matched_df, pd.DataFrame)
+        and not matched_df.empty
+        and "matched" in matched_df.columns
+        and bool(matched_df["matched"].any())
+    )
+
     if matched_any:
-        # В вашем запросе нужен именно текст без перечисления вкладов.
-        lines.append("  Совпавшие топ-правила есть.")
+        # Подготовим и выведем сами правила
+        m = matched_df[matched_df["matched"]].copy()
+
+        # Если нет готового contribution — посчитаем
+        if "contribution" not in m.columns and {"raw", "weight"} <= set(m.columns):
+            m["contribution"] = m["raw"].astype(float) * m["weight"].astype(float)
+
+        # Сортировка: сначала по |contribution|, иначе по weight
+        if "contribution" in m.columns:
+            m = m.sort_values("contribution", key=lambda s: s.abs(), ascending=False)
+        elif "weight" in m.columns:
+            m = m.sort_values("weight", ascending=False)
+
+        lines.append("  Совпавшие правила (вклад):")
+        cols_have = set(m.columns)
+        show_metrics = {"raw", "weight", "contribution"} <= cols_have
+
+        for _, r in m.head(max_rules).iterrows():
+            rule = f"    {r['feat_a']}={r['bin_a']} & {r['feat_b']}={r['bin_b']}"
+            if show_metrics:
+                rule += (f"  raw={float(r['raw']):+0.3f}, "
+                         f"weight={float(r['weight']):.2f}, "
+                         f"contrib={float(r['contribution']):+0.3f}")
+            lines.append(rule)
     else:
         if used_fallback:
             lines.append("  Совпавших топ-правил нет. Использована базовая оценка обучающей выборки.")
@@ -580,6 +607,7 @@ def format_latest_signal_brief(result: Dict[str, pd.DataFrame]) -> str:
             lines.append("  Совпавших топ-правил нет.")
 
     return "\n".join(lines)
+
 
 
 def analyze_feature_synergies(

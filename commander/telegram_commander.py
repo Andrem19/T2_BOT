@@ -30,7 +30,7 @@ from commander.service import format_trades_report, tail_log
 from metrics.serv import read_last_metrics, map_time_to_score, extract_scores_by_time
 from metrics.vizualize import render_btc_indicators_chart
 from metrics.load_metrics import load_compact_metrics
-from metrics.feature_synergy import analyze_feature_synergies, format_synergies
+from metrics.feature_synergy import analyze_feature_synergies, format_synergies, format_latest_signal_brief
 # ---------------------------------------------------------------------------
 # Команды
 # ---------------------------------------------------------------------------
@@ -48,8 +48,11 @@ async def lig(mode: str = None):
         
         res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
                                     bins=2, min_support=8, k_max=3, topn=10)
-        result = format_synergies(res)
-        print(path, result)
+        result = ''
+        if mode == 'm':
+            result = format_latest_signal_brief(res) 
+        else:
+            result = format_synergies(res)
         
         await tel.send_inform_message("COLLECTOR_API", '', path, True)
         await asyncio.sleep(2)
