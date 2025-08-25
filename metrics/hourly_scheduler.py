@@ -301,7 +301,6 @@ class HourlyAt57Scheduler:
           - любые исключения ловятся и логируются,
           - в файл metrics.json пишется ТОЛЬКО результат task_two + time_utc (UTC).
         """
-        initialize("tbot.db")
         started_local = datetime.now()
         hour_started = started_local.replace(minute=0, second=0, microsecond=0)
         hour_ending = hour_started + timedelta(hours=1)
