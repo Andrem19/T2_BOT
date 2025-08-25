@@ -1,5 +1,6 @@
 from datetime import datetime
 import asyncio
+from exchanges.hyperliquid_api import HL
 
 
 # np.set_printoptions(legacy='1.25')
@@ -106,7 +107,8 @@ def process_metrics_file_round_time_utc(path: str) -> List[Dict[str, Any]]:
     return records
 
 async def main() -> None:
-    process_metrics_file_round_time_utc('metrics.json')
+    HL.place_limit_post_only('BTCUSDT', 'Sell', 112180, 0, 0.0012, False, 2)
+    # process_metrics_file_round_time_utc('metrics.json')
     # data = ld.load_candles('../MARKET_DATA/_crypto_data/BTCUSDT/BTCUSDT_1h.csv', datetime(2020, 1, 1), datetime(2025, 6, 1))
 
     # for i in range(54, len(data)):

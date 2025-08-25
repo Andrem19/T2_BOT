@@ -753,28 +753,76 @@ class HL:
         account_idx: int = 1,
     ) -> bool:
         """
-        Простой постинг лимитной заявки с post-only (TIF="Alo") на указанной цене.
+        Постинг лимитной заявки с post-only (TIF="Alo") на указанной цене, с
+        корректной подгонкой под тики Hyperliquid.
+
         Возвращает:
-            True  — если заявка была успешно размещена (resting) или мгновенно исполнена (filled),
-            False — если заявка не была размещена (ошибка/отклонение) или размер после округления равен 0.
-        Дополнительно: при статусе 'resting' выполняется короткая проверка через open_orders,
-        чтобы убедиться, что заявка действительно находится в книге.
+            True  — если заявка успешно размещена (resting) или была мгновенно исполнена (filled),
+            False — если заявка отклонена/ошибка/некорректные параметры.
+
+        Особенности:
+          - Учитывает одновременно два ограничения Hyperliquid:
+              (а) не более 5 значащих цифр у цены,
+              (б) не более (MAX_DECIMALS - szDecimals) знаков после запятой
+                  (для perps MAX_DECIMALS=6, для spot MAX_DECIMALS=8).
+          - Эффективный тик = max(тик по значащим цифрам, тик по десятичным).
+          - Квантизация: для Buy — вниз (floor), для Sell — вверх (ceil).
+          - Короткая верификация наличия resting-ордера в open_orders.
         """
-        cl   = HL._get_client(account_idx)
+        import math
+        import time
+        from decimal import Decimal, ROUND_DOWN, ROUND_UP
+
+        cl = HL._get_client(account_idx)
         name = coin[:-4]
         is_buy = (sd == "Buy")
 
         # --- метаданные и разрядности ---
         try:
-            meta   = HL.instrument_info(coin, account_idx)
+            meta = HL.instrument_info(coin, account_idx)
             sz_dec = int(meta["szDecimals"])
-            px_dec = max(0, 6 - sz_dec)  # для перпов правило точности цены
+            # По документации HL: MAX_DECIMALS=6 для перпов, 8 для спота.
+            # В этом методе работаем с перпами (exchange.order), поэтому:
+            MAX_DECIMALS = 6
+            dec_limit = max(0, MAX_DECIMALS - sz_dec)  # лимит знаков после запятой
         except Exception:
             sv.logger.exception("[place_limit_post_only:%s] failed to read instrument meta", coin)
             return False
 
-        def _round_px(x: float) -> float:
-            return float(f"{x:.{px_dec}f}") if px_dec > 0 else float(int(x))
+        # --- утилиты квантизации цены под сетку HL ---
+        def _compute_effective_tick(px: float) -> Decimal:
+            """
+            Эффективный тик = max(тик по значащим цифрам, тик по десятичным):
+              - по значащим: 10^(floor(log10(px)) - 4), ограничение ≤ 5 sigfigs;
+              - по десятичным: 10^(-dec_limit).
+            Для px<=0 — используем только десятичный тик.
+            """
+            if not (isinstance(px, (int, float)) and math.isfinite(px)) or px <= 0:
+                base_tick = Decimal(10) ** Decimal(-dec_limit)
+                return base_tick
+
+            order_mag = math.floor(math.log10(px))  # порядок
+            # Шаг, чтобы не превысить 5 значащих цифр (последняя — 10^(order_mag-4))
+            sig_tick = Decimal(10) ** Decimal(order_mag - 4)
+            base_tick = Decimal(10) ** Decimal(-dec_limit)
+            return max(sig_tick, base_tick)
+
+        def _quantize_price(px: float, is_buy: bool) -> float:
+            tick = _compute_effective_tick(px)
+            if tick <= 0:
+                return 0.0
+
+            # Сначала грубая квантизация по тикам (floor/ceil)
+            px_dec = Decimal(str(px))
+            q = (px_dec / tick)
+            q = (q.to_integral_value(rounding=ROUND_DOWN if is_buy else ROUND_UP)) * tick
+
+            # Приведём число к приемлемому количеству знаков (dec_limit), без дрожи float
+            fmt_quant = Decimal(10) ** Decimal(-dec_limit)  # квант для форматирования
+            q = q.quantize(fmt_quant, rounding=ROUND_DOWN if is_buy else ROUND_UP)
+
+            # В редких случаях при очень больших ценах decimals запрещены — тик>=1 и q уже целое
+            return float(q)
 
         # --- размер ---
         try:
@@ -788,9 +836,15 @@ class HL:
             sv.logger.exception("[place_limit_post_only:%s] failed to compute size/last px", coin)
             return False
 
-        # --- цена (как передана, лишь аккуратное округление под тик) ---
+        # --- цена: аккуратно квантизируем под тики HL ---
         try:
-            px = _round_px(float(limit_px))
+            raw_px = float(limit_px)
+            px = _quantize_price(raw_px, is_buy)
+            if px <= 0:
+                sv.logger.warning("[place_limit_post_only:%s] non-positive px after quantization; abort", coin)
+                return False
+            if abs(px - raw_px) / max(1.0, abs(raw_px)) > 1e-8:
+                sv.logger.info("[place_limit_post_only:%s] px quantized: raw=%s -> px=%s", coin, raw_px, px)
         except Exception:
             sv.logger.exception("[place_limit_post_only:%s] invalid limit price", coin)
             return False
@@ -820,17 +874,21 @@ class HL:
             sv.logger.warning("[place_limit_post_only:%s] unexpected response shape", coin)
             return False
 
-        # Если сразу исполнилось — считаем успешным размещением
+        # Явная обработка ошибок, которые возвращает HL (в т.ч. tick size)
+        if "error" in st:
+            sv.logger.warning("[place_limit_post_only:%s] order rejected: %s", coin, st.get("error"))
+            return False
+
+        # Если вдруг сразу исполнилось (обычно с Alo не должно) — успех
         if "filled" in st:
             return True
 
-        # Если стоит в книге — проверим, что действительно отображается в open_orders
+        # Если стоит в книге — проверяем по open_orders наличие OID
         if "resting" in st:
             oid = st["resting"].get("oid")
             if not oid:
                 return False
 
-            # короткая верификация наличия в списке открытых заявок
             for _ in range(3):
                 try:
                     open_ords = HL.get_open_orders(account_idx)
@@ -840,13 +898,12 @@ class HL:
                     sv.logger.exception("[place_limit_post_only:%s] get_open_orders failed", coin)
                 time.sleep(0.2)
 
-            # не нашли — считаем, что заявки нет
             sv.logger.warning("[place_limit_post_only:%s] resting OID %s not found in open_orders", coin, oid)
             return False
 
-        # Если пришёл error/нет нужных полей — неуспех
         sv.logger.warning("[place_limit_post_only:%s] neither filled nor resting: %s", coin, st)
         return False
+
 
 
 
