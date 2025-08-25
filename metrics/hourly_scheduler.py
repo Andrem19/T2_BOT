@@ -361,7 +361,8 @@ class HourlyAt57Scheduler:
                 records = res['latest_matched_rules'].to_dict(orient="records")
                 Signaler.set_score(xscore)
                 Signaler.set_rules_count(len(records))
-                Signaler.set_time(date.timestamp())         
+                date_2 = datetime.now(timezone.utc)
+                Signaler.set_time(date_2.timestamp())         
                 
                 await tel.send_inform_message("COLLECTOR_API", f"{pretty_str}", "", False)
                 _logger.info("Метрика записана (%s). Только task_two + time_utc.", self.cfg.metrics_path)
