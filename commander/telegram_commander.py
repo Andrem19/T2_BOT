@@ -47,7 +47,7 @@ async def lig(mode: str = None):
         path = render_btc_indicators_chart(sample, exclude_keys=exclude, interval='15m')
         
         res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
-                                    bins=2, min_support=8, k_max=3, topn=10)
+                                    bins=2, min_support=14, k_max=3, topn=10)
         result = ''
         if mode == 'm':
             result = format_latest_signal_brief(res) 

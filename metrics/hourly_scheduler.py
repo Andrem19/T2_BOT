@@ -337,7 +337,7 @@ class HourlyAt57Scheduler:
                 sample = load_compact_metrics('metrics.json')
 
                 res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
-                                            bins=2, min_support=8, k_max=3, topn=10)
+                                            bins=2, min_support=14, k_max=3, topn=10)
                 last_signal = format_latest_signal_brief(res)
                 minify_dict['fin_score'] = last_signal
                 pretty_str = tools.dict_to_pretty_string(minify_dict)
