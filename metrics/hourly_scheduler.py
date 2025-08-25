@@ -18,6 +18,7 @@ from metrics.serv import map_time_to_score, get_rr25_iv
 import helpers.tools as tools
 import helpers.tlg as tel
 from dataclasses import dataclass
+from database.signaler import Signaler
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -67,14 +68,21 @@ def _resolve_project_root() -> Path:
             return p
     return Path.cwd().resolve()
 
+from datetime import datetime, timezone, timedelta
+
 def _round_to_nearest_hour_utc(dt: datetime) -> datetime:
     """
-    Округление к ближайшему часу по UTC.
-    Правило: если минут < 30 — вниз, если минут ≥ 30 — вверх.
-    Примеры:
-      11:59:41Z -> 12:00:00Z
-      12:05:00Z -> 12:00:00Z
-      12:30:00Z -> 13:00:00Z
+    Округление к ближайшей отметке :00 или :30 по UTC (к ближайшему получасу).
+    Если расстояния равны (ровно :15 или :45), округляем вверх.
+
+    Примеры (UTC):
+      11:14:59 -> 11:00:00
+      11:15:00 -> 11:30:00   (tie -> вверх)
+      11:29:59 -> 11:30:00
+      11:44:59 -> 11:30:00
+      11:45:00 -> 12:00:00   (tie -> вверх)
+      12:05:00 -> 12:00:00
+      12:30:00 -> 12:30:00
     """
     if dt.tzinfo is None:
         # Если пришёл наивный datetime — считаем, что он в UTC
@@ -83,9 +91,16 @@ def _round_to_nearest_hour_utc(dt: datetime) -> datetime:
         # Нормализуем в UTC на случай другого часового пояса
         dt = dt.astimezone(timezone.utc)
 
-    base = dt.replace(minute=0, second=0, microsecond=0)
-    half_hour = base + timedelta(minutes=30)
-    return base if dt < half_hour else base + timedelta(hours=1)
+    base = dt.replace(minute=0, second=0, microsecond=0)          # HH:00
+    m30  = base + timedelta(minutes=30)                           # HH:30
+    m60  = base + timedelta(hours=1)                              # (HH+1):00
+
+    # Выбираем ближайшую точку; при равенстве — более позднюю (вверх)
+    candidates = [(base, abs(dt - base)), (m30, abs(dt - m30)), (m60, abs(m60 - dt))]
+    min_dist = min(d for _, d in candidates)
+    nearest  = max([t for t, d in candidates if d == min_dist])
+    return nearest
+
 
 
 def _append_json_line(file_path: Path, payload: Dict[str, Any]) -> None:

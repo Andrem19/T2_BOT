@@ -14,7 +14,7 @@ from database.simple_orm import initialize
 import services.serv as serv
 from metrics.vizualize import render_btc_indicators_chart
 from metrics.load_metrics import load_compact_metrics
-from metrics.feature_synergy import analyze_feature_synergies, format_synergies
+from metrics.feature_synergy import analyze_feature_synergies, format_latest_signal_brief
 from metrics.correlation import analyze_features_vs_market
 import helpers.tlg as tlg
 from helpers.metrics import analyze_option_slice, pic_best_opt
@@ -36,24 +36,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 async def main() -> None:
-        sample = load_compact_metrics('metrics.json')
-        
-        keys=['stables', 'breadth', 'macro', 'price_oi_funding', 'sentiment', 'calendar', 'basis', 'orderbook', 'flows']
-        exclude = []
+    sample = load_compact_metrics('metrics.json')
 
-        exclude = keys
-            
-        path = render_btc_indicators_chart(sample, exclude_keys=exclude, interval='15m')
+    res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
+                                bins=2, min_support=14, k_max=3, topn=10)
+    last_signal = format_latest_signal_brief(res)
+    print(res['latest_score'])
+    print(type(res['latest_matched_rules']))
+    records = res['latest_matched_rules'].to_dict(orient="records")
+    print(len(records))
+    
         
-        res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
-                                    bins=2, min_support=8, k_max=3, topn=10)
-        result = format_synergies(res)
-        print('=====================================')
-        print(result)
-        
-        # await tel.send_inform_message("COLLECTOR_API", '', path, True)
-        # await asyncio.sleep(2)
-        # await tel.send_inform_message("COLLECTOR_API", result, '', False)
+# await tel.send_inform_message("COLLECTOR_API", '', path, True)
+# await asyncio.sleep(2)
+# await tel.send_inform_message("COLLECTOR_API", result, '', False)
 
 if __name__ == "__main__":
     asyncio.run(main())
