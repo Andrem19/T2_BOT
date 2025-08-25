@@ -13,6 +13,7 @@ from exchanges.hyperliquid_api import HL
 from exchanges.bybit_option_hub import BybitOptionHub as BB
 from exchanges.bybit_option_hub import update_leg_subscriptions, ensure_option_feed_alive
 from services.metrics import refresh_stables
+from trader.handle_trade import trade_logic
 import services.monitoring as monitoring
 import services.open_option as open_opt
 import helpers.tlg as tlg
@@ -88,6 +89,7 @@ async def main():
             
             which_pos_we_need = open_opt.get_required_position()
             if counter%6==0 and sv.simulation:
+                await trade_logic()
                 await refresh_stables()
                 await search.search(which_pos_we_need)
             

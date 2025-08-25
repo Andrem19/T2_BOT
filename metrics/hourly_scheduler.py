@@ -356,6 +356,13 @@ class HourlyAt57Scheduler:
                 last_signal = format_latest_signal_brief(res)
                 minify_dict['fin_score'] = last_signal
                 pretty_str = tools.dict_to_pretty_string(minify_dict)
+                
+                xscore = float(res['latest_score'])
+                records = res['latest_matched_rules'].to_dict(orient="records")
+                Signaler.set_score(xscore)
+                Signaler.set_rules_count(len(records))
+                Signaler.set_time(date.timestamp())         
+                
                 await tel.send_inform_message("COLLECTOR_API", f"{pretty_str}", "", False)
                 _logger.info("Метрика записана (%s). Только task_two + time_utc.", self.cfg.metrics_path)
             except Exception as write_exc:
