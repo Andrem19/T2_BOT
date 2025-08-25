@@ -1,10 +1,3 @@
-from exchanges.hyperliquid_api import HL
-import time
-from helpers.spot_price_feed import start_spot_price_streams, SpotPriceCache
-
-from typing import Dict, Optional
-import math
-
 from typing import Any, Dict, Optional, Tuple, List
 import math
 
@@ -194,20 +187,3 @@ def compute_stablecoins_metrics(
         "summary": summary,
         "composite": composite,
     }
-
-
-
-
-start_spot_price_streams(['USDCUSDT', 'FDUSDUSDT', 'USDPUSDT'])
-
-while True:
-    price_USDC = SpotPriceCache.get('USDCUSDT')
-    price_FDUSD = SpotPriceCache.get('FDUSDUSDT')
-    price_USDP = SpotPriceCache.get('USDPUSDT')
-
-    result = compute_stablecoins_metrics(price_USDC, price_FDUSD, price_USDP)
-    print(f"USDCUSDT: {result['USDCUSDT']['last']}")
-    print(f"FDUSDUSDT: {result['FDUSDUSDT']['last']}")
-    print(f"USDPUSDT: {result['USDPUSDT']['last']}")
-    print(f"Score: {result['composite']['score']}")
-    time.sleep(3)

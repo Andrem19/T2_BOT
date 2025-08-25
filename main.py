@@ -4,6 +4,7 @@ import shared_vars as sv
 from shared_vars import logger
 from decouple import config
 from helpers.price_feed import start_price_streams, ensure_streams_alive_for_symbols, PriceCache, CandleCache
+from helpers.spot_price_feed import start_spot_price_streams, SpotPriceCache
 from helpers.safe_sender import safe_send
 from helpers.firebase_writer import FirebaseWriter
 import database.simple_orm as DataBase
@@ -11,6 +12,7 @@ from database.commands_tab import Commands
 from exchanges.hyperliquid_api import HL
 from exchanges.bybit_option_hub import BybitOptionHub as BB
 from exchanges.bybit_option_hub import update_leg_subscriptions, ensure_option_feed_alive
+from services.metrics import refresh_stables
 import services.monitoring as monitoring
 import services.open_option as open_opt
 import helpers.tlg as tlg
@@ -36,8 +38,12 @@ async def main():
     )
     BB.initialise(testnet=False)
     symbs = [s+ 'USDT' for s in sv.symbols]
+    
     start_price_streams(symbs, klines={60: 200})
+
     await asyncio.sleep(2)
+    
+    start_spot_price_streams(['USDCUSDT', 'FDUSDUSDT', 'USDPUSDT'])
     logger.info("Services sucsessfuly initialized")
     logger.info("Loading candles %s → %s…", sv.START_DATE, sv.END_DATE)
     if 'SOL' in sv.symbols:
@@ -82,6 +88,7 @@ async def main():
             
             which_pos_we_need = open_opt.get_required_position()
             if counter%6==0 and sv.simulation:
+                await refresh_stables()
                 await search.search(which_pos_we_need)
             
             #===========OPEN POSITION==============
