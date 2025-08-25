@@ -41,7 +41,7 @@ BASE_COLOR_MAP: Dict[str, Any] = {
     "macro":            "#17becf",
     "news_score":       "#000000",
     "rr25":             "#17a2b8",
-    "iv":               "#ffbb78",
+    "iv":               "#f38e2a",
     "overall":          "#0439E9",
 }
 
