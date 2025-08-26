@@ -39,7 +39,7 @@ async def lig(mode: str = None):
     try:
         sample = load_compact_metrics('metrics.json')
         
-        keys=['breadth', 'cross', 'macro', 'price_oi_funding', 'sentiment', 'calendar', 'basis', 'orderbook', 'flows']
+        keys=['breadth', 'cross', 'macro', 'sentiment', 'calendar', 'basis', 'orderbook', 'flows']
         exclude = []
         if mode == 'm':
             exclude = keys
