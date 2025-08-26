@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from concurrent.futures import Future, TimeoutError as FutTimeoutError
 
+from metrics.signal.get_prediction import prediction
 from database.simple_orm import initialize
 from metrics.indicators import MarketIntel
 from metrics.score import score_snapshot
@@ -351,21 +352,21 @@ class HourlyAt57Scheduler:
                 _append_json_line(self.cfg.metrics_path, payload)
                 await asyncio.sleep(70)
                 sample = load_compact_metrics('metrics.json')
-
+                xscore = prediction(sample)
                 res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
                                             bins=2, min_support=14, k_max=3, topn=10)
                 last_signal = format_latest_signal_brief(res)
                 minify_dict['fin_score'] = last_signal
                 pretty_str = tools.dict_to_pretty_string(minify_dict)
                 
-                xscore = float(res['latest_score'])
-                records = res['latest_matched_rules'].to_dict(orient="records")
+                # xscore = float(res['latest_score'])
+                # records = res['latest_matched_rules'].to_dict(orient="records")
                 Signaler.set_score(xscore)
-                Signaler.set_rules_count(len(records))
+                # Signaler.set_rules_count(len(records))
                 date_2 = datetime.now(timezone.utc)
                 Signaler.set_time(date_2.timestamp())         
                 
-                await tel.send_inform_message("COLLECTOR_API", f"{pretty_str}", "", False)
+                await tel.send_inform_message("COLLECTOR_API", f"prediction: {xscore}\n\n{pretty_str}", "", False)
                 _logger.info("Метрика записана (%s). Только task_two + time_utc.", self.cfg.metrics_path)
             except Exception as write_exc:
                 status = "error"

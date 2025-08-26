@@ -2,9 +2,9 @@ from database.signaler import Signaler
 
 
 def get_signal(signals: Signaler):
-    if signals.score > 0.30 and signals.rules_count > 3:
+    if signals.score > 0.80:
         return 1
-    elif signals.score < -0.30 and signals.rules_count > 3:
+    elif signals.score < 0.20:
         return 2
     else: 
         return 0
