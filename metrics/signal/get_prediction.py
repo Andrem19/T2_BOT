@@ -1,4 +1,4 @@
-from metrics.signal.catboost import predict_proba, predict_label
+from train import predict_proba, predict_label
 from typing import Any, Dict, List, Tuple
 import joblib
 

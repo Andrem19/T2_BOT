@@ -32,19 +32,21 @@ from metrics.indicators import MarketIntel
 import json
 import helpers.tlg as tel
 from datetime import datetime, timezone
+import joblib
 from typing import Any, Dict, List, Optional, Tuple
-
+from metrics.signal.get_prediction import prediction
 
 async def main() -> None:
     sample = load_compact_metrics('metrics.json')
-
-    res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
-                                bins=2, min_support=14, k_max=3, topn=10)
-    last_signal = format_latest_signal_brief(res)
-    print(res['latest_score'])
-    print(type(res['latest_matched_rules']))
-    records = res['latest_matched_rules'].to_dict(orient="records")
-    print(len(records))
+    res = await prediction(sample)
+    print(res)
+    # res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
+    #                             bins=2, min_support=14, k_max=3, topn=10)
+    # last_signal = format_latest_signal_brief(res)
+    # print(res['latest_score'])
+    # print(type(res['latest_matched_rules']))
+    # records = res['latest_matched_rules'].to_dict(orient="records")
+    # print(len(records))
     
         
 # await tel.send_inform_message("COLLECTOR_API", '', path, True)

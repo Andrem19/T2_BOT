@@ -352,7 +352,7 @@ class HourlyAt57Scheduler:
                 _append_json_line(self.cfg.metrics_path, payload)
                 await asyncio.sleep(70)
                 sample = load_compact_metrics('metrics.json')
-                xscore = prediction(sample)
+                xscore = await prediction(sample)
                 res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
                                             bins=2, min_support=14, k_max=3, topn=10)
                 last_signal = format_latest_signal_brief(res)
