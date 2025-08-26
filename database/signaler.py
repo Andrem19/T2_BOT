@@ -5,7 +5,8 @@ from database.simple_orm import BaseModel
 class Signaler(BaseModel):
     refresh_time: float = 1.0
     signal: int = 0
-    score: float = 0.0
+    score: float = 0
+    yscore: float = 0
     rules_count: int = 0
 
     @classmethod
@@ -32,6 +33,12 @@ class Signaler(BaseModel):
     def set_score(cls, value: float):
         inst = cls.get_instance()
         inst.score = value
+        inst.save()
+        return inst
+    @classmethod
+    def set_yscore(cls, value: float):
+        inst = cls.get_instance()
+        inst.yscore = value
         inst.save()
         return inst
 

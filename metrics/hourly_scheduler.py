@@ -359,9 +359,10 @@ class HourlyAt57Scheduler:
                 minify_dict['fin_score'] = last_signal
                 pretty_str = tools.dict_to_pretty_string(minify_dict)
                 
-                # xscore = float(res['latest_score'])
+                yscore = float(res['latest_score'])
                 # records = res['latest_matched_rules'].to_dict(orient="records")
                 Signaler.set_score(xscore)
+                Signaler.set_yscore(yscore)
                 # Signaler.set_rules_count(len(records))
                 date_2 = datetime.now(timezone.utc)
                 Signaler.set_time(date_2.timestamp())         
