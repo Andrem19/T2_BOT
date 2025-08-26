@@ -38,8 +38,11 @@ from metrics.signal.get_prediction import prediction
 
 async def main() -> None:
     sample = load_compact_metrics('metrics.json')
+    
+
     res = await prediction(sample)
     print(res)
+
     # res = analyze_feature_synergies(sample, symbol="BTCUSDT", market="um",
     #                             bins=2, min_support=14, k_max=3, topn=10)
     # last_signal = format_latest_signal_brief(res)
