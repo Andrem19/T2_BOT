@@ -17,9 +17,9 @@ async def trade_logic():
             if signal in [1, 2]:
                 await tp.open_position(signal)
         else:
-            if position['size'] < 0 and signal == 2:
+            if position['size'] < 0 and signal in [2, 0]:
                 return
-            elif position['size'] > 0 and signal == 1:
+            elif position['size'] > 0 and signal in [1, 0]:
                 return
             else:
                 await tp.close_position()
