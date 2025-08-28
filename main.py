@@ -89,12 +89,12 @@ async def main():
             
             which_pos_we_need = open_opt.get_required_position()
             if counter%6==0 and sv.simulation:
-                await trade_logic()
+                # await trade_logic()
                 await refresh_stables()
                 await search.search(which_pos_we_need)
             
             #===========OPEN POSITION==============
-            if (which_pos_we_need != 'nothing' and (h in [11, 12] and weekday in [0,1,2,3,4])) or sv.force_take:
+            if (which_pos_we_need != 'nothing' and (h in [11, 12] and weekday in [0,1,2,3,4])) or (sv.force_take and which_pos_we_need != 'nothing'):
                 
                 left_to_exp = serv.hours_until_next_8utc()
                 best_simulation = serv.get_best()
