@@ -31,7 +31,6 @@ def secon_dec():
                     sv.stages['simulation']['fut_perc_c'] = 0.20
                     sv.stages['simulation']['fut_perc_p'] = 0.80
                     return True
-        sv.logger.info("secon_dec: returning False")
         return False
     except Exception as e:
         sv.logger.exception(f'[secon_dec] {e}')
