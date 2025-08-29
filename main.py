@@ -16,6 +16,7 @@ from services.metrics import refresh_stables
 from trader.handle_trade import trade_logic
 import services.monitoring as monitoring
 import services.open_option as open_opt
+from services.second_logic import secon_dec
 import helpers.tlg as tlg
 import services.open_futures as open_fut
 import services.search as search
@@ -94,7 +95,8 @@ async def main():
                 await search.search(which_pos_we_need)
             
             #===========OPEN POSITION==============
-            if ((h in [11, 12] and weekday in [0,1,2,3,4]) and which_pos_we_need == 'first') or (sv.force_take and which_pos_we_need != 'nothing'):
+            second_hedge = secon_dec()
+            if ((h in [11, 12] and weekday in [0,1,2,3,4]) and which_pos_we_need == 'first') or second_hedge or (sv.force_take and which_pos_we_need != 'nothing'):
                 
                 left_to_exp = serv.hours_until_next_8utc()
                 best_simulation = serv.get_best()
