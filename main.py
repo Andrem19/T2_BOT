@@ -94,7 +94,7 @@ async def main():
                 await search.search(which_pos_we_need)
             
             #===========OPEN POSITION==============
-            if (which_pos_we_need != 'nothing' and (h in [11, 12] and weekday in [0,1,2,3,4])) or (sv.force_take and which_pos_we_need != 'nothing'):
+            if ((h in [11, 12] and weekday in [0,1,2,3,4]) and which_pos_we_need == 'first') or (sv.force_take and which_pos_we_need != 'nothing'):
                 
                 left_to_exp = serv.hours_until_next_8utc()
                 best_simulation = serv.get_best()
