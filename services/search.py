@@ -126,6 +126,8 @@ async def search(which_pos_we_need: str):
                     ask_indicator = tools.option_ask_indicator(left_to_exp, strike, last_price, ask, mode, rel_atr)
 
                     q_frac = iv_to_q(iv, left_to_exp)
+                    if which_pos_we_need == 'second':
+                        q_frac = q_frac-0.001
                     
                     diff = 0
                     if mode == 'put':

@@ -8,7 +8,8 @@ Cargo.lock
 # Environment files
 .env
 .env.* 
-
+*.js
+*.html
 # Logs
 *.log
 logs
