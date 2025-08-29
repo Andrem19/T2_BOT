@@ -8,7 +8,6 @@ def secon_dec():
         if sv.stages['first']['exist'] and not sv.stages['second']['exist']:
             dt = datetime.now(timezone.utc)
             if dt.hour in [20, 21, 22, 23, 0, 1, 2]:
-                sv.logger.info("secon_dec: hour is within decision window [20..23,0..2]")
                 upper_perc = sv.stages['first']['upper_perc']*0.5
                 lower_perc = sv.stages['first']['lower_perc']*0.5
                 entry_px = sv.stages['first']['position']['position_info']['entryPx']
