@@ -13,7 +13,9 @@ def signal(data, i: int) -> dict:
     
     hour = dt.hour
     weekday = dt.weekday()
-    if hour == dt_now.hour and weekday in [0,1,2,3,4]:
+    
+    weekdays_set = [5,6] if dt_now.weekday() in [5, 6] else [0,1,2,3,4]
+    if hour == dt_now.hour and weekday in weekdays_set:
         decision = True
     
     return {
