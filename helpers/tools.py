@@ -172,8 +172,6 @@ def calc_bid(bids: Dict[float, float], percent: float) -> float:
     :return: интерполированное или экстраполированное значение
     :raises ValueError: если percent вне [0.005, 0.05]
     """
-    if not 0.005 <= percent <= 0.05:
-        raise ValueError("percent должен быть в диапазоне от 0.005 до 0.05")
 
     # Сортируем ключи один раз; это работает для произвольного числа ориентиров.
     keys = sorted(bids)
