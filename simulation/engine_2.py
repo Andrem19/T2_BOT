@@ -25,8 +25,8 @@ def simulation(data, i, fut_calc, params, end_idx):
         open_price = data[i][1]
         
         
-        high_border = open_price * (1+params['upper_perc'])
-        lower_border = open_price * (1-params['lower_perc'])
+        high_border = open_price+params['up_p']# open_price * (1+params['upper_perc'])
+        lower_border = open_price-params['low_p'] # open_price * (1-params['lower_perc'])
         middle_2 = 0
         if mode == 'put':
             middle_2 = open_price * (1-strike)

@@ -159,6 +159,8 @@ async def search(which_pos_we_need: str):
                             params = {
                                 'lower_perc': sl_pct,
                                 'upper_perc': tp_pct,
+                                'up_p': (current_px*(1+tp_pct))-current_px,
+                                'low_p': current_px-(current_px*(1-sl_pct)),
                                 'hours': left_to_exp,
                                 'mode': mode,
                                 'kof': v['kof']
