@@ -67,30 +67,30 @@ def simulation(data, i, fut_calc, params, end_idx):
             it+=1
             
 
-        if breakout=='time':
-            if (close_price < middle_2 and mode == 'put') or (close_price > middle_2 and mode == 'call'):
-                breakout = 'time_middle_2'
-                if mode == 'put':
-                    pnl = -abs((((open_price-close_price)*qty)*0.80))
-                else:
-                    pnl = -abs((((close_price-open_price)*qty)*0.80))
-            elif close_price >= open_price:
-                breakout = 'time_up'
-                if mode == 'put':
-                    pnl = ((close_price-open_price)*qty)-ask_cost
-                else:
-                    pnl = -abs((((close_price-open_price)*qty)+ask_cost))
-            elif close_price < open_price:
-                breakout = 'time_down'
-                if mode == 'put':
-                    pnl = -abs((((open_price-close_price)*qty)+ask_cost))
-                else:
-                    pnl = ((open_price-close_price)*qty)-ask_cost
+        # if breakout=='time':
+        #     if (close_price < middle_2 and mode == 'put') or (close_price > middle_2 and mode == 'call'):
+        #         breakout = 'time_middle_2'
+        #         if mode == 'put':
+        #             pnl = -abs((((open_price-close_price)*qty)*0.80))
+        #         else:
+        #             pnl = -abs((((close_price-open_price)*qty)*0.80))
+        #     elif close_price >= open_price:
+        #         breakout = 'time_up'
+        #         if mode == 'put':
+        #             pnl = ((close_price-open_price)*qty)-ask_cost
+        #         else:
+        #             pnl = -abs((((close_price-open_price)*qty)+ask_cost))
+        #     elif close_price < open_price:
+        #         breakout = 'time_down'
+        #         if mode == 'put':
+        #             pnl = -abs((((open_price-close_price)*qty)+ask_cost))
+        #         else:
+        #             pnl = ((open_price-close_price)*qty)-ask_cost
 
-        if breakout =='upper':
-            pnl = up_pnl
-        if breakout == 'lower':
-            pnl = down_pnl
+        # if breakout =='upper':
+        #     pnl = up_pnl
+        # if breakout == 'lower':
+        #     pnl = down_pnl
         
         
         pnl_fut = (close_price-open_price)*qty if mode == 'put' else (open_price-close_price)*qty
