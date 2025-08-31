@@ -66,13 +66,13 @@ async def search(which_pos_we_need: str):
             day_opt = sv.day_opt if h >= 0 and h < 6 else sv.day_opt+1
             opt_day_1, _ = tools.get_next_friday_day(day_opt)
 
-            
+            trh_ITM = 0.002
             filtered_chain_0 = []
             if 'call' in sv.opt_types:
-                filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
+                filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7, trh_ITM)
                 filtered_chain_0.extend(filtered_chain_calls)
             if 'put' in sv.opt_types:
-                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
+                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7, trh_ITM)
                 filtered_chain_0.extend(filtered_chain_puts)
 
             left_to_exp = tools.time_to_expiry(filtered_chain_0[0]['deliveryTime'])
@@ -81,15 +81,15 @@ async def search(which_pos_we_need: str):
 
             best_opts = []
             if rr25 < 0.01 and rr25 > -0.01:
-                filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
+                filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7, trh_ITM)
                 best_opts.extend(filtered_chain_calls)
-                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
+                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7, trh_ITM)
                 best_opts.extend(filtered_chain_puts)
             elif rr25 < -0.01:
-                filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7)
+                filtered_chain_calls = tools.filter_otm_options(chain, opt_day_1, 'C', 7, trh_ITM)
                 best_opts.extend(filtered_chain_calls)
             else:
-                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7)
+                filtered_chain_puts = tools.filter_otm_options(chain, opt_day_1, 'P', 7, trh_ITM)
                 best_opts.extend(filtered_chain_puts)                                
 
             sv.stages['simulation']['time_to_exp'] = left_to_exp

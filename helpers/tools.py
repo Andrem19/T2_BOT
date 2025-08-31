@@ -238,67 +238,140 @@ def get_next_friday_day(days: int = 4) -> Tuple[str, int]:
     return f"{target.day}{month_str}", delta
 
 
+from typing import List, Dict
+
 def filter_otm_options(
     options: List[Dict[str, str]],
     expiry_token: str,
     option_flag: str,
-    count: int
+    count: int,
+    threshold_pct: float = 0.0,
 ) -> List[Dict[str, str]]:
     """
     Фильтрует список опционов по следующим критериям:
-      1) истекают в дату, содержащую строку expiry_token (например, '29AUG');
+      1) истекают в дату, содержащую строку `expiry_token` (например, '29AUG');
       2) соответствуют типу 'C' (Call) или 'P' (Put);
-      3) являются OTM (out‑of‑the‑money) по текущей цене базового актива;
-      4) возвращает не более count штук, отсортированных по близости страйка к текущей цене:
-         — для Call: от самых низких страйков выше цены;
-         — для Put: от самых высоких страйков ниже цены.
+      3) являются OTM (out-of-the-money) по текущей цене базового актива, а также
+         ДОПОЛНИТЕЛЬНО включают «почти-ATM/ITM» контракты в пределах процента `threshold_pct`
+         от цены базового (если `threshold_pct > 0`). Пример: threshold_pct=0.01 -> ±1%.
+         - Для Call дополнительно включаются страйки в диапазоне [price*(1-thr), price].
+         - Для Put  дополнительно включаются страйки в диапазоне [price, price*(1+thr)].
+      4) возвращает не более `count` штук, с упорядочиванием:
+         — для Call: сначала OTM/ATM выше цены по возрастанию страйка,
+                     затем добавка «почти-ITM» ниже цены по убыванию страйка (ближе к цене первыми);
+         — для Put:  сначала OTM/ATM ниже цены по убыванию страйка,
+                     затем добавка «почти-ITM» выше цены по возрастанию страйка.
 
-    :param options: список словарей-описаний опционов
-    :param expiry_token: фрагмент, определяющий дату экспирации (например, '29AUG')
-    :param option_flag: 'C' для Call или 'P' для Put
-    :param count: максимальное число опционов в результате
-    :return: список отфильтрованных OTM опционов, не более count штук
-    :raises ValueError: при неверном option_flag или отрицательном count
+    Параметры:
+    ----------
+    options : List[Dict[str, str]]
+        Список словарей-описаний опционов (ожидаются ключи: 'displayName'/'symbol', 'optionsType',
+        'strike', 'underlyingPrice').
+    expiry_token : str
+        Фрагмент, определяющий дату экспирации (например, '29AUG').
+    option_flag : str
+        'C' для Call или 'P' для Put.
+    count : int
+        Максимальное число опционов в результате (должно быть > 0).
+    threshold_pct : float
+        Допуск в долях (0.0..), в пределах которого включать «почти-ATM/ITM».
+        Если 0.0 — поведение строго как раньше: только OTM.
+
+    Возвращает:
+    -----------
+    List[Dict[str, str]] : список отфильтрованных опционов, не более `count`.
+
+    Исключения:
+    -----------
+    ValueError — при неверных аргументах или невозможности получить цену базового.
     """
     flag = option_flag.upper()
-    if flag not in ('C', 'P'):
+    if flag not in ("C", "P"):
         raise ValueError("option_flag должен быть 'C' (Call) или 'P' (Put)")
     if count <= 0:
         raise ValueError("count должен быть положительным целым числом")
+    if threshold_pct < 0:
+        raise ValueError("threshold_pct должен быть >= 0.0")
 
-    # 1. Фильтрация по дате экспирации
+    # 1) Фильтрация по дате экспирации
     by_expiry = [
         opt for opt in options
-        if expiry_token in opt.get('displayName', '') or expiry_token in opt.get('symbol', '')
+        if expiry_token in str(opt.get("displayName", "")) or expiry_token in str(opt.get("symbol", ""))
     ]
 
-    # 2. Фильтрация по типу
-    type_map = {'C': 'Call', 'P': 'Put'}
-    by_type = [opt for opt in by_expiry if opt.get('optionsType') == type_map[flag]]
+    # 2) Фильтрация по типу
+    type_map = {"C": "Call", "P": "Put"}
+    by_type = [opt for opt in by_expiry if opt.get("optionsType") == type_map[flag]]
     if not by_type:
         return []
 
-    # 3. Вычисляем текущую цену базового актива (берём из первого)
-    try:
-        underlying_price = float(by_type[0]['underlyingPrice'])
-
-    except (KeyError, TypeError, ValueError):
+    # 3) Получаем цену базового (берём из первого валидного)
+    underlying_price = None
+    for opt in by_type:
+        try:
+            underlying_price = float(opt["underlyingPrice"])
+            if underlying_price > 0:
+                break
+        except (KeyError, TypeError, ValueError):
+            continue
+    if underlying_price is None or underlying_price <= 0:
         raise ValueError("Не удалось получить корректную цену базового актива из данных опционов")
 
-    # 4. OTM фильтрация и сортировка
-    if flag == 'C':
-        # OTM Call: strike > price
-        otm = [opt for opt in by_type if float(opt['strike']) > underlying_price]
-        # от самых близких к цене (минимальный страйк выше цены)
-        sorted_otm = sorted(otm, key=lambda o: float(o['strike']))
-    else:
-        # OTM Put: strike < price
-        otm = [opt for opt in by_type if float(opt['strike']) < underlying_price]
-        # от самых близких к цене (максимальный страйк ниже цены)
-        sorted_otm = sorted(otm, key=lambda o: float(o['strike']), reverse=True)
+    # Подготовка толеранса по цене
+    tol = underlying_price * float(threshold_pct)
 
-    # 5. Возвращаем первые count результатов
-    return sorted_otm[:count]
+    # Утилита безопасного чтения страйка
+    def _get_strike(opt: Dict[str, str]) -> float:
+        return float(opt["strike"])
+
+    # 4) Построение кандидатов: OTM-группа + «почти-ATM/ITM» по threshold
+    above_price: List[Dict[str, str]] = []     # страйки >= price (используем для Call основную сортировку)
+    below_price: List[Dict[str, str]] = []     # страйки <= price (используем для Put основную сортировку)
+    near_itm_addon: List[Dict[str, str]] = []  # добавка с противоположной стороны, в пределах tol
+
+    # Разбор по сторонам, с пропуском битых записей
+    for opt in by_type:
+        try:
+            k = _get_strike(opt)
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        if k >= underlying_price:
+            above_price.append(opt)
+        if k <= underlying_price:
+            below_price.append(opt)
+
+    if flag == "C":
+        # OTM/ATM для Call — страйки строго выше цены считаются OTM, равные цене — ATM (включим в "above" естественно).
+        otm_main = [o for o in above_price if float(o["strike"]) > underlying_price]
+        # Добавка: «почти-ITM» — в пределах tol ниже/равно цене.
+        if tol > 0:
+            near_itm_addon = [
+                o for o in below_price
+                if underlying_price - tol <= float(o["strike"]) <= underlying_price
+            ]
+        # Сортировка: сначала основная группа (возрастание страйка), затем добавка (убывание — ближе к цене первыми)
+        otm_main_sorted = sorted(otm_main, key=lambda o: float(o["strike"]))
+        addon_sorted = sorted(near_itm_addon, key=lambda o: float(o["strike"]), reverse=True)
+        candidates = otm_main_sorted + addon_sorted
+
+    else:  # flag == "P"
+        # OTM/ATM для Put — страйки строго ниже цены считаются OTM, равные цене — ATM (включим в "below").
+        otm_main = [o for o in below_price if float(o["strike"]) < underlying_price]
+        # Добавка: «почти-ITM» — в пределах tol выше/равно цене.
+        if tol > 0:
+            near_itm_addon = [
+                o for o in above_price
+                if underlying_price <= float(o["strike"]) <= underlying_price + tol
+            ]
+        # Сортировка: сначала основная группа (убывание страйка), затем добавка (возрастание — ближе к цене первыми)
+        otm_main_sorted = sorted(otm_main, key=lambda o: float(o["strike"]), reverse=True)
+        addon_sorted = sorted(near_itm_addon, key=lambda o: float(o["strike"]))
+        candidates = otm_main_sorted + addon_sorted
+
+    # 5) Возвращаем первые count результатов
+    return candidates[:count]
+
 
 def calc_tp_sl_pct(
     current_price: float,
