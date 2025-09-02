@@ -7,7 +7,7 @@ def secon_dec():
     try:
         if sv.stages['first']['exist'] and not sv.stages['second']['exist']:
             dt = datetime.now(timezone.utc)
-            if dt.hour in [20, 21, 22, 23, 0]:
+            if dt.hour in [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0]:
                 upper_perc = sv.stages['first']['upper_perc']*0.5
                 lower_perc = sv.stages['first']['lower_perc']*0.5
                 entry_px = sv.stages['first']['position']['position_info']['entryPx']
