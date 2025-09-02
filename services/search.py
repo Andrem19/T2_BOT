@@ -167,11 +167,9 @@ async def search(which_pos_we_need: str):
                                 if mode == 'put':
                                     fut_perc = sv.stages['simulation'].get('fut_perc_p', 0.80)
                                     opt_qty = tools.calc_futures_qty(take_profit, target, current_px, ask*v['kof'], (targ_bid-ask)*v['kof'], mode, share_target=fut_perc)
-                                    logger.info(f'FUT PERC: {fut_perc}')
                                 else:
                                     fut_perc = sv.stages['simulation'].get('fut_perc_c', 0.80)
                                     opt_qty = tools.calc_futures_qty(target, take_profit, current_px,(targ_bid-ask)*v['kof'], ask*v['kof'], mode, share_target=fut_perc)
-                                    logger.info(f'FUT PERC: {fut_perc}')
                             except Exception as e:
                                 print(e)
                                 continue
