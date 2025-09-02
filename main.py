@@ -89,13 +89,14 @@ async def main():
             #===========CALCULATION================
             
             which_pos_we_need = open_opt.get_required_position()
+            second_hedge = secon_dec()
             if counter%6==0 and sv.simulation:
                 # await trade_logic()
                 await refresh_stables()
                 await search.search(which_pos_we_need)
             
             #===========OPEN POSITION==============
-            second_hedge = secon_dec()
+            
             if ((h in [11, 12] and weekday in [0,1,2,3,4]) and which_pos_we_need == 'first') or second_hedge or (sv.force_take and which_pos_we_need != 'nothing'):
                 
                 left_to_exp = serv.hours_until_next_8utc()
