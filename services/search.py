@@ -154,6 +154,16 @@ async def search(which_pos_we_need: str):
                             
                             logger.info(f'CALC BID: {v["bids"]} {p_t}')
                             targ_bid = tools.calc_bid(v['bids'], p_t)
+                            
+                            if mode == 'put':
+                                targ_px = current_px * (1-sl_pct)
+                                targ_bid = (current_px-targ_px)*v['kof']
+                            else:
+                                targ_px = current_px * (1+tp_pct)                  
+                                targ_bid = (targ_px-current_px)*v['kof']
+                            
+                            print(f'new targ_bid: {targ_bid}')
+                            
                             params = {
                                 'lower_perc': sl_pct,
                                 'upper_perc': tp_pct,
@@ -163,6 +173,10 @@ async def search(which_pos_we_need: str):
                                 'mode': mode,
                                 'kof': v['kof']
                             }
+                            
+                            
+
+                            
                             try:
                                 if mode == 'put':
                                     fut_perc = sv.stages['simulation'].get('fut_perc_p', 0.80)
