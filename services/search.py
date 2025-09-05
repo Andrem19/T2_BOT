@@ -157,10 +157,10 @@ async def search(which_pos_we_need: str):
                             
                             if mode == 'put':
                                 targ_px = current_px * (1-sl_pct)
-                                targ_bid = (current_px-targ_px)*v['kof']
+                                targ_bid = current_px-targ_px
                             else:
                                 targ_px = current_px * (1+tp_pct)                  
-                                targ_bid = (targ_px-current_px)*v['kof']
+                                targ_bid = targ_px-current_px
                             
                             print(f'new targ_bid: {targ_bid}')
                             
