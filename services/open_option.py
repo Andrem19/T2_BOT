@@ -90,7 +90,7 @@ async def open_opt(position: dict, which_pos_we_need: str):
         symbol = position['symbol']
         qty_abs = abs(contracts)
         desired_price = position['ask_original']
-        tp_price = position['best_targ_bid']
+        tp_price = position['best_targ_bid']*1.02
         side_in = 'Buy'
         
         snapshot = BB.Chain.get_snapshot(symbol=symbol, testnet=False, with_greeks=False)
