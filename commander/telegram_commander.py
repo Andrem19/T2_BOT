@@ -31,9 +31,18 @@ from metrics.serv import read_last_metrics, map_time_to_score, extract_scores_by
 from metrics.vizualize import render_btc_indicators_chart
 from metrics.load_metrics import load_compact_metrics
 from metrics.feature_synergy import analyze_feature_synergies, format_synergies, format_latest_signal_brief
+from simulation.serv import load_weekday_stats
 # ---------------------------------------------------------------------------
 # Команды
 # ---------------------------------------------------------------------------
+
+async def days():
+    try:
+        items = load_weekday_stats()
+        pretty_str = tools.dict_to_pretty_string(items)
+        await tel.send_inform_message("COLLECTOR_API", f"{pretty_str}", "", False)
+    except Exception as e:
+        await tel.send_inform_message("COLLECTOR_API", f"{e}", "", False)
 
 async def lig(mode: str = None):
     try:
@@ -350,6 +359,7 @@ def init_commander():
     sv.commander.add_command(["tail"], tail)
     sv.commander.add_command(["wings"], wings)
     sv.commander.add_command(["day"], day)
+    sv.commander.add_command(["days"], days)
     sv.commander.add_command(["hist"], trade_hist)
     sv.commander.add_command(["bal"], balances)
     sv.commander.add_command(["simhist"], sim_hist)
