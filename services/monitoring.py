@@ -14,7 +14,7 @@ async def process_position(last_px: float, pos_name: str):
             return True
         
         #========PNL TARGET=========
-        pnl_target = sv.stages[pos_name]['position']['pnl_target']
+        pnl_target = sv.stages[pos_name]['position']['pnl_target']*1.15
         tot_pnl = sv.stages[pos_name]['position']['position_info'].get('unrealizedPnl', 0) + sv.stages[pos_name]['position']['leg']['info'].get('unrealisedPnl', 0)
         if pnl_target > 0 and tot_pnl >= pnl_target:
             flag = '_fut' if sv.stages[pos_name]['position']['position_info'].get('unrealizedPnl', 0) > 0 and sv.stages[pos_name]['position']['leg']['info'].get('unrealisedPnl', 0) < 0 else '_opt'

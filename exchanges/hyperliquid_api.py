@@ -357,18 +357,20 @@ class HL:
         reprice_interval_sec: int = 30,
         max_wait_cycles: int = 2,
         reprice_threshold_bps: float = 2.0,
-        min_offset_ticks: int = 1,   # ← гарант от пересечения
+        min_offset_ticks: int = 1,
     ) -> Optional[dict]:
         """
-        Лимитный ордер строго post-only (TIF="Alo") как можно ближе к рынку с авто-перестановкой.
-        Правки:
-          • целимся от bestBid/bestAsk, а не от mid;
-          • направленное округление к сетке тика;
-          • на ALO-отклонение — немедленный пересчёт по текущему l2Book.
+        Лимитный ордер строго post-only (TIF="Alo") максимально близко к рынку с авто-перестановкой.
+        Ключевые изменения против прежней версии:
+        • Ведём строгий учёт ИМЕННО остатка (remaining) относительно стартовой позиции;
+        • На каждом цикле переставляем ордер ТОЛЬКО на remaining — никогда не больше;
+        • Перед маркет-фолбэком всегда cancel_all по инструменту и повторный расчёт remaining;
+        • Для reduce_only объём ограничивается текущей позицией на соответствующей стороне;
+        • Упрощённый и детерминированный цикл: cancel → place ALO на остаток → наблюдение → (опционально) маркет на остаток.
 
         Возвращает:
-            dict | None — открытую позицию по инструменту (как в HL.get_position),
-            либо None, если позиции нет (например, reduce_only и нет позиции).
+            dict | None — актуальную позицию по инструменту (как в HL.get_position),
+            либо None, если нечего было исполнять (например, reduce_only при отсутствии обратной позиции).
         """
         trace_id = f"limit_post_only:{coin}:{sd}:{int(time.time()*1000)}"
         sv.logger.info(
@@ -381,76 +383,63 @@ class HL:
         cl   = HL._get_client(account_idx)
         name = coin[:-4]
         is_buy = (sd == "Buy")
+        side_mult = 1.0 if is_buy else -1.0
 
         # ---------- Метаданные и разрядности ----------
         try:
             meta = HL.instrument_info(coin, account_idx)
             sz_dec = int(meta["szDecimals"])
-            px_dec = max(0, 6 - sz_dec)  # цена для перпов HL (см. SDK)
+            px_dec = max(0, 6 - sz_dec)  # согласно SDK HL для perp
+            min_tick_by_dec = 10.0 ** (-px_dec)
             sv.logger.debug(
-                "[%s] meta: name=%s szDecimals=%d -> size_decimals=%d, price_decimals=%d, maxLev=%s",
-                trace_id, name, sz_dec, sz_dec, px_dec, meta.get("maxLeverage"),
+                "[%s] meta: name=%s szDecimals=%d price_decimals=%d maxLev=%s",
+                trace_id, name, sz_dec, px_dec, meta.get("maxLeverage"),
             )
         except Exception:
             sv.logger.exception("[%s] failed to fetch meta/instrument_info", trace_id)
             raise
 
-        # ---------- Вспомогательные ----------
-        def _round_to_decimals_floor(x: float, dec: int) -> float:
+        # ---------- Утилиты округления ----------
+        def _round_floor(x: float, dec: int) -> float:
             if dec <= 0:
                 return float(int(x))
             s = 10.0 ** dec
             return float(int(x * s)) / s
 
-        def _round_to_decimals_ceil(x: float, dec: int) -> float:
+        def _round_ceil(x: float, dec: int) -> float:
             if dec <= 0:
                 return float(int(x) if x == int(x) else int(x) + 1)
             s = 10.0 ** dec
             v = x * s
             iv = int(v)
-            if v == iv:
-                return float(iv) / s
-            return float(iv + 1) / s
+            return float(iv if v == iv else iv + 1) / s
 
+        # ---------- Книга и целевая цена ----------
         def _book_best_and_tick() -> tuple[float, float, float]:
-            """bestBid, bestAsk, tick. Определяем стороны относительно mid и оцениваем тик из книги."""
+            """bestBid, bestAsk, tick (оценка тика по книге, с фолбэком по dec)."""
             mid = float(cl["info"].all_mids()[name])
             book = cl["info"].l2_snapshot(name)
             levels = book.get("levels", [])
             if not levels or len(levels) < 2:
-                # запасной путь — только mid, тик по dec
-                tick = 10.0 ** (-px_dec)
-                sv.logger.warning("[%s] l2_snapshot empty; fallback mid/tick: mid=%.12f tick=%.*f",
-                                  trace_id, mid, px_dec, tick)
-                return mid - tick, mid + tick, tick
+                return mid - min_tick_by_dec, mid + min_tick_by_dec, min_tick_by_dec
 
             side0 = [float(x["px"]) for x in levels[0] if "px" in x]
             side1 = [float(x["px"]) for x in levels[1] if "px" in x]
             if not side0 or not side1:
-                tick = 10.0 ** (-px_dec)
-                sv.logger.warning("[%s] l2 sides empty; fallback mid/tick: mid=%.12f tick=%.*f",
-                                  trace_id, mid, px_dec, tick)
-                return mid - tick, mid + tick, tick
+                return mid - min_tick_by_dec, mid + min_tick_by_dec, min_tick_by_dec
 
             s0_min, s0_max = min(side0), max(side0)
             s1_min, s1_max = min(side1), max(side1)
 
-            # Определим, где бид, где аск, относительно mid:
-            # - у бидов max <= mid
-            # - у асков min >= mid
-            # если обе стороны «по обе стороны» от mid (бывает при шуме), решаем по среднему значению
             def classify(prices):
                 mn, mx = min(prices), max(prices)
                 if mx <= mid: return "bid"
                 if mn >= mid: return "ask"
-                # неоднозначно — решим по расстоянию до mid
                 avg = sum(prices) / len(prices)
                 return "bid" if avg < mid else "ask"
 
-            c0 = classify(side0)
-            c1 = classify(side1)
+            c0, c1 = classify(side0), classify(side1)
             if c0 == c1:
-                # как страховку: возьмём меньшие цены как бид, большие — как аск
                 bid_side = side0 if (s0_max <= s1_min) else side1
                 ask_side = side1 if bid_side is side0 else side0
             else:
@@ -460,72 +449,72 @@ class HL:
             best_bid = max(bid_side)
             best_ask = min(ask_side)
 
-            # Оценим тик: минимальная положительная разница внутри каждой стороны
             def min_diff(prs):
                 prs = sorted(set(prs))
                 diffs = [prs[i+1]-prs[i] for i in range(len(prs)-1)]
                 diffs = [d for d in diffs if d > 0]
                 return min(diffs) if diffs else 0.0
 
-            tick_candidates = [min_diff(bid_side), min_diff(ask_side), 10.0 ** (-px_dec)]
-            tick = min([t for t in tick_candidates if t > 0]) if any(t > 0 for t in tick_candidates) else 10.0 ** (-px_dec)
-
-            sv.logger.debug(
-                "[%s] book: bestBid=%.12f bestAsk=%.12f tick=%.*f mid=%.12f",
-                trace_id, best_bid, best_ask, px_dec, tick, mid,
-            )
+            tick_candidates = [min_diff(bid_side), min_diff(ask_side), min_tick_by_dec]
+            tick = min([t for t in tick_candidates if t > 0]) if any(t > 0 for t in tick_candidates) else min_tick_by_dec
             return best_bid, best_ask, tick
 
-        def _target_px_from_book(best_bid: float, best_ask: float, tick: float, want_buy: bool, mkt_px: float) -> float:
-            # целевой отступ в б.п. от "рынка"
-            base = mkt_px
-            off = base * (offset_bps / 1e4)
-            raw = (base - off) if want_buy else (base + off)
-            # приближаем к лучшей стороне с безопасным отступом в тиках
+        def _target_px(best_bid: float, best_ask: float, tick: float, want_buy: bool, ref_px: float) -> float:
+            """Целевая цена с учётом offset_bps и минимального безопасного отступа от противоположной лучшей."""
+            off_abs = ref_px * (offset_bps / 1e4)
+            raw = (ref_px - off_abs) if want_buy else (ref_px + off_abs)
             if want_buy:
-                # не выше bestAsk - min_offset_ticks*tick
-                lim = best_ask - max(min_offset_ticks, 1) * tick
-                raw = min(raw, lim)
-                # и не ниже bestBid (чтобы «стоять в книге», а не глубоко)
+                lim_top = best_ask - max(1, min_offset_ticks) * tick
+                raw = min(raw, lim_top)
                 raw = max(raw, best_bid)
-                # округляем ВНИЗ
-                px = _round_to_decimals_floor(raw, px_dec)
-                # на всякий случай строго < bestAsk
+                px = _round_floor(raw, px_dec)
                 if px >= best_ask:
-                    px = _round_to_decimals_floor(best_ask - tick, px_dec)
+                    px = _round_floor(best_ask - tick, px_dec)
             else:
-                # не ниже bestBid + min_offset_ticks*tick
-                lim = best_bid + max(min_offset_ticks, 1) * tick
-                raw = max(raw, lim)
-                # и не выше bestAsk (старайся быть у топа книги)
+                lim_bot = best_bid + max(1, min_offset_ticks) * tick
+                raw = max(raw, lim_bot)
                 raw = min(raw, best_ask)
-                # округляем ВВЕРХ
-                px = _round_to_decimals_ceil(raw, px_dec)
-                # на всякий случай строго > bestBid
+                px = _round_ceil(raw, px_dec)
                 if px <= best_bid:
-                    px = _round_to_decimals_ceil(best_bid + tick, px_dec)
+                    px = _round_ceil(best_bid + tick, px_dec)
             return px
 
-        # ---------- Размер позиции ----------
+        # ---------- Позиция и объём ----------
+        def _signed_pos() -> float:
+            """Подпись: long > 0, short < 0. Унифицируем разные формы ответа HL.get_position."""
+            try:
+                p = HL.get_position(coin, account_idx)
+                if not p:
+                    return 0.0
+                # Частые варианты:
+                if "szi" in p and p["szi"] not in (None, ""):
+                    return float(p["szi"])
+                if "size" in p and p.get("side") in ("Buy", "Sell"):
+                    sz = float(p["size"])
+                    return sz if p["side"] == "Buy" else -sz
+                # Последний шанс: ищем любой числовой ключ с 'sz'
+                for k, v in p.items():
+                    if "sz" in k.lower():
+                        try:
+                            return float(v)
+                        except Exception:
+                            continue
+            except Exception:
+                sv.logger.exception("[%s] _signed_pos() failed", trace_id)
+            return 0.0
+
+        # Рассчёт требуемого размера заявки
         try:
             last = HL.get_last_price(coin, account_idx)
-            size = amount_coins or (amount_usdt / last)
-            size = round(float(size), sz_dec)
-            if size <= 0:
-                sv.logger.error(
-                    "[%s] invalid size after rounding: size=%s sz_dec=%s (last=%.12f)",
-                    trace_id, size, sz_dec, last,
-                )
-                raise ValueError("Order size is zero after rounding. Check amount_usdt/amount_coins.")
-            sv.logger.info(
-                "[%s] size: last=%.12f amount_usdt=%s amount_coins=%s -> size=%.*f",
-                trace_id, last, amount_usdt, amount_coins, sz_dec, size,
-            )
+            base_size = amount_coins if amount_coins > 0 else (amount_usdt / last)
+            target_abs = round(float(base_size), sz_dec)
+            if target_abs <= 0:
+                raise ValueError("Order size <= 0 after rounding. Check amount_usdt/amount_coins.")
         except Exception:
-            sv.logger.exception("[%s] failed to compute order size / last price", trace_id)
+            sv.logger.exception("[%s] failed to compute target size", trace_id)
             raise
 
-        # ---------- Плечо ----------
+        # Лимит плеча (не меняем бизнес-логику)
         try:
             lev = min(20, int(meta["maxLeverage"]))
             HL.set_leverage(coin, lev, account_idx)
@@ -534,212 +523,176 @@ class HL:
             sv.logger.exception("[%s] failed to set leverage", trace_id)
             raise
 
-        # ---------- Первичная постановка ALO (по стакану) ----------
-        try:
-            best_bid, best_ask, tick = _book_best_and_tick()
-            mkt_px = float(cl["info"].all_mids()[name])
-            px     = _target_px_from_book(best_bid, best_ask, tick, is_buy, mkt_px)
-            sv.logger.info(
-                "[%s] place initial ALO: side=%s size=%.*f px=%.*f (bb=%.12f ba=%.12f tick=%.*f) reduce_only=%s",
-                trace_id, sd, sz_dec, size, px_dec, px, best_bid, best_ask, px_dec, tick, reduce_only,
-            )
-            order = cl["exchange"].order(
-                name,
-                is_buy,
-                size,
-                px,
-                {"limit": {"tif": "Alo"}},
-                reduce_only=reduce_only,
-            )
-            sv.logger.debug("[%s] initial order response: %s", trace_id, order)
-            if order is None:
-                raise RuntimeError("Exchange.order returned None")
-        except Exception:
-            sv.logger.exception("[%s] failed to place initial ALO order", trace_id)
-            raise
+        start_pos = _signed_pos()
+        sv.logger.info("[%s] start_pos=%.*f, requested_abs=%.*f, side=%s reduce_only=%s",
+                    trace_id, sz_dec, start_pos, sz_dec, target_abs, sd, reduce_only)
 
-        # ---------- Разбор ответа ----------
-        oid = None
-        try:
-            status0 = order["response"]["data"]["statuses"][0]
-        except Exception:
-            status0 = {}
-            sv.logger.warning("[%s] unexpected order response shape, no statuses[0]", trace_id)
+        # Для reduce_only ограничим объём доступной обратной частью позиции
+        if reduce_only:
+            avail_to_reduce = max(0.0, -start_pos) if is_buy else max(0.0, start_pos)
+            target_abs = min(target_abs, round(avail_to_reduce, sz_dec))
+            if target_abs <= 0:
+                sv.logger.info("[%s] nothing to reduce (reduce_only). Returning current position.", trace_id)
+                return HL.get_position(coin, account_idx)
 
-        def _status_dump(st: dict) -> str:
+        desired_delta = side_mult * target_abs  # на сколько хотим изменить позицию относительно start_pos
+
+        def _remaining() -> float:
+            """Сколько ещё нужно ИЗМЕНИТЬ позицию (signed) от текущего состояния до цели."""
+            cur = _signed_pos()
+            executed = cur - start_pos
+            # учитываем только компонент в нужном направлении
+            if desired_delta > 0:
+                executed_aligned = max(0.0, executed)
+            else:
+                executed_aligned = min(0.0, executed)
+            rem = desired_delta - executed_aligned
+            # округлим к шагу размера, чтобы избежать бесконечного хвоста
+            if rem > 0:
+                rem = max(0.0, round(rem, sz_dec))
+            else:
+                rem = min(0.0, round(rem, sz_dec))
+            return rem
+
+        def _place_alo_for_remaining() -> Optional[str]:
+            """Отменяем существующие по инструменту и ставим ALO ровно на текущий остаток."""
+            # Отменяем все свои лимитные, чтобы избежать дублирования
             try:
-                return f"keys={list(st.keys())} content={st}"
+                HL.cancel_all_orders(coin, account_idx)
             except Exception:
-                return repr(st)
+                sv.logger.exception("[%s] cancel_all before place failed (ignored)", trace_id)
 
-        if "error" in status0:
-            sv.logger.warning("[%s] initial ALO error: %s", trace_id, _status_dump(status0))
+            # Пересчитываем остаток после отмены
+            rem = _remaining()
+            if abs(rem) <= (10 ** -sz_dec):
+                sv.logger.info("[%s] nothing to place after cancel_all; remaining≈0", trace_id)
+                return None
 
-        if "filled" in status0:
-            sv.logger.info("[%s] initial ALO filled immediately. Fetching position…", trace_id)
-            time.sleep(0.2)
-            pos = HL.get_position(coin, account_idx)
-            sv.logger.info("[%s] position after immediate fill: %s", trace_id, pos)
-            return pos
+            want_buy = (rem > 0)
+            rem_abs = abs(rem)
+            best_bid, best_ask, tick = _book_best_and_tick()
+            ref_px  = float(cl["info"].all_mids()[name])
+            px      = _target_px(best_bid, best_ask, tick, want_buy, ref_px)
 
-        if "resting" in status0:
-            oid = status0["resting"]["oid"]
-            sv.logger.info("[%s] initial order resting: oid=%s px=%.*f", trace_id, oid, px_dec, px)
-        else:
-            # ALO отклонён — немедленно перечитать книгу и поставить безопаснее относительно bestBid/Ask
+            sv.logger.info(
+                "[%s] place ALO: side=%s rem=%.*f px=%.*f (bb=%.12f ba=%.12f tick=%.*f) reduce_only=%s",
+                trace_id, "Buy" if want_buy else "Sell", sz_dec, rem_abs, px_dec, px, best_bid, best_ask, px_dec, tick, reduce_only
+            )
             try:
-                best_bid, best_ask, tick = _book_best_and_tick()
-                mkt_px = float(cl["info"].all_mids()[name])
-                px2 = _target_px_from_book(best_bid, best_ask, tick * 2, is_buy, mkt_px)  # + запас 2 тика
+                order = cl["exchange"].order(
+                    name, want_buy, rem_abs, px, {"limit": {"tif": "Alo"}}, reduce_only=reduce_only
+                )
+                st = None
+                if order and order.get("status") == "ok":
+                    st = order["response"]["data"]["statuses"][0]
+                else:
+                    sv.logger.warning("[%s] exchange.order returned non-ok: %s", trace_id, order)
+
+                # Быстрые случаи: filled/resting/ALO reject
+                if st and "filled" in st:
+                    sv.logger.info("[%s] ALO filled immediately (rem=%.*f).", trace_id, sz_dec, rem_abs)
+                    return None
+                if st and "resting" in st:
+                    oid = st["resting"]["oid"]
+                    sv.logger.info("[%s] ALO resting: oid=%s", trace_id, oid)
+                    return oid
+
+                # Если ALO отклонён — сделаем попытку с запасом 2 тика от противоположной лучшей
+                best_bid, best_ask, tick2 = _book_best_and_tick()
+                px2 = _target_px(best_bid, best_ask, tick2 * 2, want_buy, ref_px)
                 sv.logger.info(
-                    "[%s] ALO rejected; retry anchored to book: px2=%.*f (bb=%.12f ba=%.12f tick*2=%.*f)",
-                    trace_id, px_dec, px2, best_bid, best_ask, px_dec, tick * 2,
+                    "[%s] ALO rejected; retry with extra ticks: px2=%.*f", trace_id, px_dec, px2
                 )
                 order2 = cl["exchange"].order(
-                    name,
-                    is_buy,
-                    size,
-                    px2,
-                    {"limit": {"tif": "Alo"}},
-                    reduce_only=reduce_only,
+                    name, want_buy, rem_abs, px2, {"limit": {"tif": "Alo"}}, reduce_only=reduce_only
                 )
-                sv.logger.debug("[%s] second order response: %s", trace_id, order2)
                 if order2 and order2.get("status") == "ok":
-                    st = order2["response"]["data"]["statuses"][0]
-                    if "error" in st:
-                        sv.logger.warning("[%s] second ALO error: %s", trace_id, _status_dump(st))
-                    if "filled" in st:
-                        sv.logger.info("[%s] second ALO filled. Fetching position…", trace_id)
-                        time.sleep(0.2)
-                        pos = HL.get_position(coin, account_idx)
-                        sv.logger.info("[%s] position after second fill: %s", trace_id, pos)
-                        return pos
-                    if "resting" in st:
-                        oid = st["resting"]["oid"]
-                        px = px2
-                        sv.logger.info("[%s] second ALO resting: oid=%s px=%.*f", trace_id, oid, px_dec, px)
+                    st2 = order2["response"]["data"]["statuses"][0]
+                    if "filled" in st2:
+                        sv.logger.info("[%s] ALO (retry) filled immediately.", trace_id)
+                        return None
+                    if "resting" in st2:
+                        oid = st2["resting"]["oid"]
+                        sv.logger.info("[%s] ALO (retry) resting: oid=%s", trace_id, oid)
+                        return oid
+
+                sv.logger.warning("[%s] unable to place resting ALO for remaining.", trace_id)
+                return None
             except Exception:
-                sv.logger.exception("[%s] retry ALO (book-anchored) failed", trace_id)
+                sv.logger.exception("[%s] placing ALO failed", trace_id)
+                return None
 
-            if oid is None:
-                sv.logger.warning(
-                    "[%s] unable to place ALO resting order; fallback to market open", trace_id
-                )
-                HL.open_market_order(coin, sd, amount_usdt, reduce_only, amount_coins, account_idx)
-                time.sleep(0.2)
-                pos = HL.get_position(coin, account_idx)
-                sv.logger.info("[%s] position after market fallback: %s", trace_id, pos)
-                return pos
-
-        # ---------- Мониторинг и перестановка ----------
-        last_check = time.time()
+        # ---------- Основной цикл ----------
+        last_ref_px = float(cl["info"].all_mids()[name])
+        oid = _place_alo_for_remaining()
         cycles = 0
+        last_tick_ts = time.time()
+
         sv.logger.info(
-            "[%s] monitoring loop: reprice_interval=%ss max_cycles=%s",
-            trace_id, reprice_interval_sec, max_wait_cycles,
+            "[%s] monitoring: reprice_interval=%ss max_wait_cycles=%s", trace_id, reprice_interval_sec, max_wait_cycles
         )
 
         while True:
-            # Ордер всё ещё открыт?
-            try:
-                open_ords = HL.get_open_orders(account_idx)
-            except Exception:
-                sv.logger.exception("[%s] get_open_orders failed", trace_id)
-                open_ords = []
+            # Проверяем достижение цели
+            rem = _remaining()
+            if abs(rem) <= (10 ** -sz_dec):
+                sv.logger.info("[%s] target reached; cancel leftovers and return.", trace_id)
+                try:
+                    HL.cancel_all_orders(coin, account_idx)
+                except Exception:
+                    sv.logger.exception("[%s] cancel_all at finish failed (ignored)", trace_id)
+                return HL.get_position(coin, account_idx)
 
-            still_open = any(o.get("oid") == oid for o in open_ords)
-            sv.logger.debug(
-                "[%s] order state: oid=%s still_open=%s open_count=%d",
-                trace_id, oid, still_open, len(open_ords),
-            )
-            if not still_open:
-                sv.logger.info("[%s] order not found in open list; fetching position…", trace_id)
-                time.sleep(0.2)
-                pos = HL.get_position(coin, account_idx)
-                sv.logger.info("[%s] position after disappearance from open list: %s", trace_id, pos)
-                return pos
-
+            # Периодическая перестановка и «подтяжка» к книге
             now = time.time()
-            if now - last_check >= reprice_interval_sec:
+            if now - last_tick_ts >= reprice_interval_sec:
                 cycles += 1
-                last_check = now
+                last_tick_ts = now
 
                 try:
-                    # Всегда якоримся на АКТУАЛЬНОМ стакане
-                    best_bid, best_ask, tick = _book_best_and_tick()
-                    new_mkt = float(cl["info"].all_mids()[name])
+                    new_mid = float(cl["info"].all_mids()[name])
                 except Exception:
-                    sv.logger.exception("[%s] book/mid fetch failed during monitoring", trace_id)
-                    best_bid, best_ask = (None, None)
-                    new_mkt = None
+                    new_mid = last_ref_px
 
-                sv.logger.debug(
-                    "[%s] reprice tick #%d: new_mkt=%s bb=%s ba=%s",
-                    trace_id, cycles,
-                    f"{new_mkt:.12f}" if new_mkt is not None else "NA",
-                    f"{best_bid:.12f}" if best_bid is not None else "NA",
-                    f"{best_ask:.12f}" if best_ask is not None else "NA",
-                )
+                moved = abs(new_mid - last_ref_px) >= (reprice_threshold_bps / 1e4) * (new_mid if new_mid else 1.0)
+                last_ref_px = new_mid
 
-                # Решение о перестановке: либо рынок «ушёл», либо хотим подтянуться к топу книги
-                moved = False
-                if new_mkt is not None:
-                    thr = (reprice_threshold_bps / 1e4) * (new_mkt if new_mkt else 1.0)
-                    moved = abs(new_mkt - mkt_px) >= thr
-                if moved and best_bid is not None and best_ask is not None:
-                    mkt_px = new_mkt
-                    new_px = _target_px_from_book(best_bid, best_ask, tick, is_buy, mkt_px)
-                    sv.logger.info(
-                        "[%s] modify_order: oid=%s side=%s size=%.*f new_px=%.*f (bb=%.12f ba=%.12f tick=%.*f, ALO)",
-                        trace_id, oid, sd, sz_dec, size, px_dec, new_px, best_bid, best_ask, px_dec, tick,
-                    )
-                    try:
-                        res = cl["exchange"].modify_order(
-                            oid,
-                            name,
-                            is_buy,
-                            size,
-                            new_px,
-                            {"limit": {"tif": "Alo"}},
-                            reduce_only=reduce_only,
-                        )
-                        sv.logger.debug("[%s] modify_order response: %s", trace_id, res)
-                        if res and res.get("status") == "ok":
-                            st = res["response"]["data"]["statuses"][0]
-                            if "error" in st:
-                                sv.logger.warning("[%s] modify_order ALO error: %s", trace_id, _status_dump(st))
-                            if "filled" in st:
-                                sv.logger.info("[%s] modify_order -> filled. Fetching position…", trace_id)
-                                time.sleep(0.2)
-                                pos = HL.get_position(coin, account_idx)
-                                sv.logger.info("[%s] position after modify fill: %s", trace_id, pos)
-                                return pos
-                            if "resting" in st:
-                                px = new_px
-                                oid = st["resting"]["oid"]
-                                sv.logger.info("[%s] modify_order -> resting: oid=%s px=%.*f",
-                                               trace_id, oid, px_dec, px)
-                    except Exception:
-                        sv.logger.exception("[%s] modify_order failed", trace_id)
+                if moved or oid is None:
+                    sv.logger.info("[%s] reprice tick #%d; moved=%s", trace_id, cycles, moved)
+                    oid = _place_alo_for_remaining()
 
-                # Исчерпали лимит ожидания — отменяем и берём маркетом
+                # Достигли лимита ожидания — уходим в маркет РОВНО на остаток
                 if cycles >= max_wait_cycles:
-                    sv.logger.warning(
-                        "[%s] max_wait_cycles reached (%d). Cancel all & market fallback.",
-                        trace_id, cycles,
-                    )
+                    sv.logger.warning("[%s] max_wait_cycles reached. Proceeding to market fallback.", trace_id)
                     try:
                         HL.cancel_all_orders(coin, account_idx)
-                        sv.logger.info("[%s] cancel_all_orders done", trace_id)
+                        sv.logger.info("[%s] cancel_all before market fallback done", trace_id)
                     except Exception:
-                        sv.logger.exception("[%s] cancel_all_orders failed", trace_id)
-                    HL.open_market_order(coin, sd, amount_usdt, reduce_only, amount_coins, account_idx)
-                    time.sleep(0.2)
-                    pos = HL.get_position(coin, account_idx)
-                    sv.logger.info("[%s] position after market fallback: %s", trace_id, pos)
-                    return pos
+                        sv.logger.exception("[%s] cancel_all before market fallback failed", trace_id)
 
-            time.sleep(1)
+                    # ОБЯЗАТЕЛЬНО пересчёт остатка ПОСЛЕ отмены — защита от «перевхода»
+                    rem = _remaining()
+                    if abs(rem) > (10 ** -sz_dec):
+                        m_side = "Buy" if rem > 0 else "Sell"
+                        rem_abs = abs(rem)
+                        sv.logger.info(
+                            "[%s] market fallback: side=%s rem=%.*f (reduce_only=%s)",
+                            trace_id, m_side, sz_dec, rem_abs, reduce_only
+                        )
+                        # Маркет на ровно rem_abs
+                        HL.open_market_order(
+                            coin,
+                            m_side,
+                            amount_usdt=0,
+                            reduce_only=reduce_only,
+                            amount_coins=rem_abs,
+                            account_idx=account_idx,
+                        )
+                    time.sleep(0.2)
+                    return HL.get_position(coin, account_idx)
+
+            time.sleep(0.5)
+
 
     @staticmethod
     @retry(Exception, tries=MAXIMUM_NUMBER_OF_API_CALL_TRIES, delay=2)

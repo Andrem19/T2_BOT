@@ -4,6 +4,70 @@ import talib
 import pandas as pd
 from numba import njit
 import numpy as np
+from datetime import datetime, timezone
+from typing import Dict, Iterable, Any
+try:
+    from zoneinfo import ZoneInfo  # type: ignore
+except Exception:
+    ZoneInfo = None  # fallback на UTC ниже 
+import json
+import os
+from pathlib import Path
+
+
+def save_weekday_stats(
+    stats: Dict[str, Any],
+    folder_path: str = "_logs",
+    filename: str = "days_stat.json",
+) -> str:
+    """
+    Сохраняет словарь статистики по дням недели в JSON.
+    Файл каждый раз перезаписывается (атомарная запись через временный файл).
+    Возвращает абсолютный путь к записанному файлу.
+
+    Параметры:
+        stats: dict — данные для сохранения
+        folder_path: str — каталог для файла (по умолчанию "_logs")
+        filename: str — имя файла (по умолчанию "days_stat.json")
+    """
+    # Готовим путь и каталог
+    folder = Path(folder_path)
+    folder.mkdir(parents=True, exist_ok=True)
+    target_path = folder / filename
+
+    # Пишем во временный файл в том же каталоге и затем атомарно заменяем
+    temp_path = target_path.with_suffix(target_path.suffix + ".tmp")
+
+    # ensure_ascii=False — чтобы корректно сохранить русские ключи 'пн', 'вт', ...
+    with temp_path.open("w", encoding="utf-8") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+    # os.replace — атомарно (на поддерживаемых ОС) заменяет целевой файл
+    os.replace(temp_path, target_path)
+
+    return str(target_path.resolve())
+
+
+def load_weekday_stats(
+    folder_path: str = "_logs",
+    filename: str = "days_stat.json",
+) -> Dict[str, Any]:
+    """
+    Читает JSON со статистикой и возвращает словарь.
+    Если файла нет или содержимое некорректно — возвращает пустой словарь {}.
+    """
+    path = Path(folder_path) / filename
+    if not path.exists():
+        return {}
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        # Гарантируем, что возвращаем именно dict
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
 
 @jit(nopython=True)
 def convert_timeframe(opens: np.ndarray, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, timeframe: int, ln: int):
@@ -150,3 +214,87 @@ def prepare_hourly(candles_1m: np.ndarray,
     df["atr7_60"] = atr_out
 
     return atr_out
+
+
+
+
+def weekday_profit_stats(rows: Iterable[dict],
+                         tz: str = "UTC") -> Dict[str, dict]:
+    """
+    Статистика прибыли/убытка по дням недели на основе времени ОТКРЫТИЯ позиции.
+
+    Аргументы:
+        rows: итерируемая коллекция словарей, где у каждого элемента есть:
+              - "start_timestamp_ms": int|float (Unix-время в миллисекундах)
+              - "period": int|float (продолжительность в минутах) — не используется
+              - "total_pnl": int|float (прибыль >0 или убыток <0)
+        tz:   IANA-таймзона, например "UTC" или "Europe/London". Используется,
+              чтобы определить локальный день недели по времени открытия.
+
+    Возвращает:
+        Словарь с ключами 'пн','вт','ср','чт','пт','сб','вс'.
+        Для каждого дня:
+            {
+              'sum_pnl': float,   # суммарный PnL за день недели
+              'count':   int,     # количество сделок
+              'avg_pnl': float    # средний PnL на сделку
+            }
+
+    Примечание:
+        - Некорректные элементы (нет ключей, нечисловые значения, NaN/inf) пропускаются.
+        - Группировка ведётся по дню недели начала сделки. Если нужна группировка
+          по дате закрытия, надо будет передавать время закрытия.
+    """
+    day_keys = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс']
+    stats = {d: {'sum_pnl': 0.0, 'count': 0, 'avg_pnl': 0.0} for d in day_keys}
+
+    # Определяем tzinfo
+    if tz.upper() == "UTC":
+        tzinfo = timezone.utc
+    else:
+        if ZoneInfo is None:
+            # Если нет zoneinfo (очень старый Python), безопасный фолбэк — UTC
+            tzinfo = timezone.utc
+        else:
+            tzinfo = ZoneInfo(tz)
+
+    for row in rows:
+        # Проверяем наличие ключей
+        if not isinstance(row, dict):
+            continue
+        if "start_timestamp_ms" not in row or "total_pnl" not in row:
+            continue
+
+        ts_ms = row["start_timestamp_ms"]
+        pnl = row["total_pnl"]
+
+        # Пробуем привести к числам
+        try:
+            ts_ms = float(ts_ms)
+            pnl = float(pnl)
+        except (TypeError, ValueError):
+            continue
+
+        # Отбрасываем NaN/inf
+        if pnl != pnl or pnl in (float("inf"), float("-inf")):
+            continue
+
+        # Переводим миллисекунды в datetime с нужной TZ
+        try:
+            dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=tzinfo)
+        except (OverflowError, OSError, ValueError):
+            continue
+
+        # 0=понедельник ... 6=воскресенье
+        idx = dt.weekday()
+        key = day_keys[idx]
+
+        stats[key]['sum_pnl'] += pnl
+        stats[key]['count'] += 1
+
+    # Финализируем среднее
+    for d in day_keys:
+        cnt = stats[d]['count']
+        stats[d]['avg_pnl'] = stats[d]['sum_pnl'] / cnt if cnt else 0.0
+
+    return stats
