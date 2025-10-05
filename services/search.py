@@ -127,8 +127,8 @@ async def search(which_pos_we_need: str):
                     ask_indicator = tools.option_ask_indicator(left_to_exp, strike, last_price, ask, mode, rel_atr)
 
                     q_frac = iv_to_q(iv, left_to_exp)
-                    p_up = 0.5 if mode == 'put' else 0.4
-                    p_down = 0.5 if mode == 'call' else 0.4
+                    p_up = 0.4 if mode == 'put' else 0.35
+                    p_down = 0.4 if mode == 'call' else 0.35
                     up_frac, down_frac = iv_to_one_sided_touch_threshold_percent(iv, left_to_exp, p_up=p_up, p_down=p_down)
                     
                     diff = 0
