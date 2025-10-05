@@ -11,6 +11,7 @@ from typing import Optional, Dict, Any
 from simulation.simulation import simulation
 from helpers.metrics import analyze_option_slice, pic_best_opt
 from database.simulation import Simulation
+from statistics import NormalDist
 import traceback
 import copy
 import copy
@@ -126,6 +127,9 @@ async def search(which_pos_we_need: str):
                     ask_indicator = tools.option_ask_indicator(left_to_exp, strike, last_price, ask, mode, rel_atr)
 
                     q_frac = iv_to_q(iv, left_to_exp)
+                    p_up = 0.5 if mode == 'put' else 0.4
+                    p_down = 0.5 if mode == 'call' else 0.4
+                    up_frac, down_frac = iv_to_one_sided_touch_threshold_percent(iv, left_to_exp, p_up=p_up, p_down=p_down)
                     
                     diff = 0
                     if mode == 'put':
@@ -197,7 +201,7 @@ async def search(which_pos_we_need: str):
                             if pnl > best_position['pnl']:
                                 best_position['type'] = mode
                                 best_position['qty'] = opt_qty['qty']
-                                best_position['ask_indicators'] = [round(iv_index, 6), round(ask_indicator, 2)]
+                                best_position['ask_indicators'] = [up_frac, down_frac]
                                 best_position['name'] = symbol[:3]
                                 best_position['symbol'] = symbol
                                 best_position['strike_perc'] = diff
@@ -310,3 +314,43 @@ def iv_to_q(iv_annual: float, hours_left: float) -> Tuple[float, float]:
     q_fraction = iv_annual * math.sqrt(year_fraction)
 
     return q_fraction
+
+def iv_to_one_sided_touch_threshold_percent(
+    iv_annual: float,
+    hours_left: float,
+    p_up: float = 0.40,     # например, целевая вероятность касания вверх
+    p_down: float = 0.40,   # и вниз, так чтобы суммарно около p_two_sided ≈ p_up + p_down
+    sampling_hours: float = 1.0,
+    continuity_correction: bool = True
+) -> Tuple[float, float]:
+    """
+    Односторонние пороги касания вверх/вниз в процентах под заданные вероятности.
+    Возвращает (m_up_percent, m_down_percent).
+    """
+    if iv_annual <= 0.0 or hours_left <= 0.0:
+        return 0.0, 0.0
+    if not (0.0 < p_up < 1.0) or not (0.0 < p_down < 1.0):
+        return 0.0, 0.0
+
+    # масштаб за горизонт
+    year_fraction = hours_left / (365.0 * 24.0)
+    sigma_H = iv_annual * math.sqrt(year_fraction)
+
+    # односторонняя инверсия: 2*(1-Phi(z)) = p  =>  z = Phi^{-1}(1 - p/2)
+    nd = NormalDist()
+    z_up   = nd.inv_cdf(1.0 - p_up   / 2.0)
+    z_down = nd.inv_cdf(1.0 - p_down / 2.0)
+
+    m_up   = z_up   * sigma_H
+    m_down = z_down * sigma_H
+
+    if continuity_correction and sampling_hours > 0.0:
+        dt = sampling_hours / 24.0
+        sigma_dt = iv_annual * math.sqrt(dt / 365.0)
+        lam = 0.5826
+        m_up   = max(m_up   - lam * sigma_dt, 0.0)
+        m_down = max(m_down - lam * sigma_dt, 0.0)
+
+    m_up_pct   = 100.0 * math.expm1(m_up)
+    m_down_pct = 100.0 * (1.0 - math.exp(-m_down))
+    return m_up_pct, m_down_pct
