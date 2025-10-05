@@ -201,7 +201,7 @@ async def search(which_pos_we_need: str):
                             if pnl > best_position['pnl']:
                                 best_position['type'] = mode
                                 best_position['qty'] = opt_qty['qty']
-                                best_position['ask_indicators'] = [up_frac, down_frac]
+                                best_position['ask_indicators'] = [up_frac/100, down_frac/100]
                                 best_position['name'] = symbol[:3]
                                 best_position['symbol'] = symbol
                                 best_position['strike_perc'] = diff
@@ -315,33 +315,28 @@ def iv_to_q(iv_annual: float, hours_left: float) -> Tuple[float, float]:
 
     return q_fraction
 
-def iv_to_one_sided_touch_threshold_fraction(
+def iv_to_one_sided_touch_threshold_percent(
     iv_annual: float,
     hours_left: float,
-    p_up: float = 0.40,     # целевая вероятн. касания вверх
-    p_down: float = 0.40,   # целевая вероятн. касания вниз
-    sampling_hours: float = 1.0,        # шаг наблюдения (часовые свечи)
-    continuity_correction: bool = True  # коррекция для дискретного наблюдения
+    p_up: float = 0.40,     # например, целевая вероятность касания вверх
+    p_down: float = 0.40,   # и вниз, так чтобы суммарно около p_two_sided ≈ p_up + p_down
+    sampling_hours: float = 1.0,
+    continuity_correction: bool = True
 ) -> Tuple[float, float]:
     """
-    Односторонние пороги касания вверх/вниз под заданные вероятности.
-    ВОЗВРАЩАЕТ ДОЛИ ЦЕНЫ: (up_frac, down_frac), где 0.01 = 1%.
-
-    iv_annual      — годовая IV в долях (0.30 = 30%)
-    hours_left     — часов до экспирации/горизонта
-    p_up, p_down   — целевые вероятности касания вверх/вниз (0..1)
-    sampling_hours — дискретность (1ч для H1)
+    Односторонние пороги касания вверх/вниз в процентах под заданные вероятности.
+    Возвращает (m_up_percent, m_down_percent).
     """
     if iv_annual <= 0.0 or hours_left <= 0.0:
         return 0.0, 0.0
-    if not (0.0 < p_up < 1.0 and 0.0 < p_down < 1.0):
+    if not (0.0 < p_up < 1.0) or not (0.0 < p_down < 1.0):
         return 0.0, 0.0
 
-    # масштаб волатильности на горизонте T
+    # масштаб за горизонт
     year_fraction = hours_left / (365.0 * 24.0)
     sigma_H = iv_annual * math.sqrt(year_fraction)
 
-    # односторонняя инверсия hitting-prob: 2*(1-Phi(z)) = p  =>  z = Phi^{-1}(1 - p/2)
+    # односторонняя инверсия: 2*(1-Phi(z)) = p  =>  z = Phi^{-1}(1 - p/2)
     nd = NormalDist()
     z_up   = nd.inv_cdf(1.0 - p_up   / 2.0)
     z_down = nd.inv_cdf(1.0 - p_down / 2.0)
@@ -349,17 +344,13 @@ def iv_to_one_sided_touch_threshold_fraction(
     m_up   = z_up   * sigma_H
     m_down = z_down * sigma_H
 
-    # Континуити-коррекция (Broadie–Glasserman–Kou) под дискретные наблюдения
     if continuity_correction and sampling_hours > 0.0:
         dt = sampling_hours / 24.0
-        # локальная σ за dt (в долях в год → за dt суток):
         sigma_dt = iv_annual * math.sqrt(dt / 365.0)
         lam = 0.5826
         m_up   = max(m_up   - lam * sigma_dt, 0.0)
         m_down = max(m_down - lam * sigma_dt, 0.0)
 
-    # Перевод лог-нормального порога в доли цены:
-    up_frac   = math.expm1(m_up)        # exp(m_up) - 1
-    down_frac = 1.0 - math.exp(-m_down) # 1 - exp(-m_down)
-
-    return up_frac, down_frac
+    m_up_pct   = 100.0 * math.expm1(m_up)
+    m_down_pct = 100.0 * (1.0 - math.exp(-m_down))
+    return m_up_pct, m_down_pct
